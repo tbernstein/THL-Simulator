@@ -22,14 +22,19 @@ def get_weighted_classes(classes, class_weights, k=4):
 def get_archetype_prob(deck_name, arch_weights):
     return arch_weights.get(deck_name, 1.0)
 
-def simulate_conquest_bo5(my_decks, opp_decks, win_rates, iterations=300):
+def simulate_conquest_bo5(my_decks, opp_decks, win_rates, iterations=2000):
     wins = 0
+    # We use a seeded random instance here so the simulation is 100% consistent 
+    # every time you click the button for the exact same decks.
+    rng = random.Random()
+    rng.seed("".join(my_decks) + "".join(opp_decks))
+    
     for _ in range(iterations):
         my_rem, opp_rem = list(my_decks), list(opp_decks)
         while my_rem and opp_rem:
-            my_p, opp_p = random.choice(my_rem), random.choice(opp_rem)
+            my_p, opp_p = rng.choice(my_rem), rng.choice(opp_rem)
             wr = win_rates.get(my_p, {}).get(opp_p, 0.5)
-            if random.random() < wr: my_rem.remove(my_p)
+            if rng.random() < wr: my_rem.remove(my_p)
             else: opp_rem.remove(opp_p)
         if not my_rem: wins += 1
     return (wins / iterations) * 100
