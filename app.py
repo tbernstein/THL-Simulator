@@ -5,23 +5,21 @@ import random
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V5 (vS Integration)", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V7", layout="wide")
 
 def get_class_from_deck(deck_name):
     return deck_name.split()[-1]
 
 def get_weighted_classes(classes, class_weights, k=4):
-    """Picks unique classes based on the uploaded weights."""
     chosen = set()
     while len(chosen) < k:
         weights = [class_weights.get(c, 1.0) for c in classes]
-        if sum(weights) == 0: weights = [1.0] * len(classes) # Fallback
+        if sum(weights) == 0: weights = [1.0] * len(classes)
         pick = random.choices(classes, weights=weights, k=1)[0]
         chosen.add(pick)
     return list(chosen)
 
 def get_archetype_prob(deck_name, arch_weights):
-    """Returns archetype internal probability. Defaults to 1.0 if unknown."""
     return arch_weights.get(deck_name, 1.0)
 
 def simulate_conquest_bo5(my_decks, opp_decks, win_rates, iterations=300):
@@ -42,7 +40,6 @@ def load_vs_matchups(uploaded_file):
     content = uploaded_file.getvalue().decode('utf-8-sig').splitlines()
     reader = list(csv.reader(content))
     
-    # 1. Hunt for the Header Row (First row starting with a blank/space and has many columns)
     header_row = None
     for row in reader:
         if len(row) > 5 and row[0].strip() == '':
@@ -53,16 +50,13 @@ def load_vs_matchups(uploaded_file):
     
     archetypes = [h.strip() for h in header_row[1:] if h.strip()]
     
-    # 2. Parse data using decimals directly
     for row in reader:
         if not row or not row[0].strip() or row == header_row: continue
         my_d = row[0].strip()
         win_rates[my_d] = {}
         for i, opp_deck in enumerate(archetypes):
-            try:
-                win_rates[my_d][opp_deck] = float(row[i+1]) # Raw vS decimal
-            except:
-                win_rates[my_d][opp_deck] = 0.5
+            try: win_rates[my_d][opp_deck] = float(row[i+1])
+            except: win_rates[my_d][opp_deck] = 0.5
     return win_rates, archetypes
 
 def load_vs_frequencies(uploaded_file):
@@ -70,7 +64,6 @@ def load_vs_frequencies(uploaded_file):
     content = uploaded_file.getvalue().decode('utf-8-sig').splitlines()
     reader = csv.reader(content)
     
-    # 1. Hunt for the "Rank" Header Row
     header_row = None
     for row in reader:
         if row and row[0].strip() == 'Rank':
@@ -79,24 +72,18 @@ def load_vs_frequencies(uploaded_file):
             
     if not header_row: return {}
     
-    try:
-        l_index = header_row.index('L') # Locate the Legend column
-    except ValueError:
-        return {}
+    try: l_index = header_row.index('L')
+    except ValueError: return {}
         
-    # 2. Parse the Legend frequencies
     for row in reader:
         if not row or not row[0].strip() or row == header_row: continue
         name = row[0].strip()
-        try:
-            freqs[name] = float(row[l_index])
-        except:
-            pass
+        try: freqs[name] = float(row[l_index])
+        except: pass
     return freqs
 
 # --- UI ---
 st.title("🛡️ THL Strategist: Legacy Division")
-st.write("Powered by automated Vicious Syndicate Data ingestion.")
 
 st.sidebar.header("vS Raw Data Uploads")
 matchup_file = st.sidebar.file_uploader("1. Matchup Table (.csv)", type=['csv'])
@@ -109,41 +96,32 @@ if matchup_file:
     for d in archetypes: class_map[get_class_from_deck(d)].append(d)
     all_classes = list(class_map.keys())
     
-    # Process vS Weights if provided
     class_weights = {}
     arch_weights = {}
     
     if class_file and deck_file:
         raw_class_freqs = load_vs_frequencies(class_file)
         raw_deck_freqs = load_vs_frequencies(deck_file)
-        
-        # Class weights are direct mappings from Legend column
         class_weights = raw_class_freqs
         
-        # Calculate Internal Archetype Weights
-        # (e.g. converting global 8% Egg Warlock to 80% Warlock representation)
         for cls, decks in class_map.items():
             total_cls_freq = sum(raw_deck_freqs.get(d, 0.0) for d in decks)
             for d in decks:
-                if total_cls_freq > 0:
-                    arch_weights[d] = raw_deck_freqs.get(d, 0.0) / total_cls_freq
-                else:
-                    arch_weights[d] = 1.0 / len(decks)
-    else:
-        st.sidebar.warning("Missing frequency data. Simulator will assume all classes and decks are equally likely.")
+                if total_cls_freq > 0: arch_weights[d] = raw_deck_freqs.get(d, 0.0) / total_cls_freq
+                else: arch_weights[d] = 1.0 / len(decks)
 
     phase = st.sidebar.selectbox("Workflow Step", [
-        "Phase 1: Lineup Builder", 
-        "Phase 2: Match Day (Ban EV)", 
-        "Phase 4: Live Tracker"
+        "Phase 1: Lineup Builder (Find Classes)", 
+        "Phase 2: Archetype Optimizer (Find Decks)", 
+        "Phase 3: Match Day Strategy (Ban & Lead)",
+        "Phase 4: Fog of War Tracker"
     ])
 
     # --- PHASE 1: LINEUP BUILDER ---
-    if phase == "Phase 1: Lineup Builder":
-        st.header("Phase 1: Pre-Lock Lineup Optimization")
-        st.write("Simulates against the field using your vS Legend class & deck distributions.")
+    if phase == "Phase 1: Lineup Builder (Find Classes)":
+        st.header("Phase 1: Pre-Lock Class Optimization")
         
-        if st.button("Run Simulation (Takes ~10 sec)"):
+        if st.button("Find Best 4 Classes to Lock (Takes ~10 sec)"):
             with st.spinner('Running Monte Carlo simulations against the meta...'):
                 best_overall_wr = 0
                 best_class_lineup = []
@@ -155,7 +133,6 @@ if matchup_file:
                     opp_decks = []
                     for c in opp_classes:
                         options = class_map[c]
-                        # Opponent brings the most popular archetype for their class
                         best_d = max(options, key=lambda d: get_archetype_prob(d, arch_weights))
                         opp_decks.append(best_d)
                     meta_field.append(opp_decks)
@@ -167,8 +144,7 @@ if matchup_file:
                         best_post_reveal_wr = 0
                         for my_deck_combo in itertools.product(*my_archetype_lists):
                             wr = simulate_conquest_bo5(random.sample(list(my_deck_combo), 3), random.sample(opp_decks, 3), win_rates, iterations=100)
-                            if wr > best_post_reveal_wr: 
-                                best_post_reveal_wr = wr
+                            if wr > best_post_reveal_wr: best_post_reveal_wr = wr
                         total_wr += best_post_reveal_wr
                     
                     avg_wr = total_wr / len(meta_field)
@@ -178,17 +154,71 @@ if matchup_file:
 
                 st.success(f"### Expected Series WR: {best_overall_wr:.2f}%")
                 st.write("**Recommended Classes to Lock:**")
-                for c in best_class_lineup:
-                    st.write(f"- **{c}**")
+                for c in best_class_lineup: st.write(f"- **{c}**")
 
-    # --- PHASE 2: MATCH DAY ---
-    elif phase == "Phase 2: Match Day (Ban EV)":
-        st.header("Phase 2: Match Day Ban Optimizer (Weighted Expected Value)")
+    # --- PHASE 2: ARCHETYPE OPTIMIZER ---
+    elif phase == "Phase 2: Archetype Optimizer (Find Decks)":
+        st.header("Phase 2: Archetype Optimizer")
+        st.write("You selected your 4 classes. Now find the exact decklists to bring against the meta.")
+        
+        my_classes = st.multiselect("Select Your 4 Locked Classes:", all_classes, max_selections=4)
+
+        if len(my_classes) == 4:
+            if st.button("Find Best Archetypes"):
+                with st.spinner("Simulating archetype combinations against the meta..."):
+                    # Generate the meta field
+                    meta_field = []
+                    for _ in range(100):
+                        opp_classes = get_weighted_classes(all_classes, class_weights, 4)
+                        opp_decks = []
+                        for c in opp_classes:
+                            options = class_map[c]
+                            best_d = max(options, key=lambda d: get_archetype_prob(d, arch_weights))
+                            opp_decks.append(best_d)
+                        meta_field.append(opp_decks)
+
+                    best_wr = 0
+                    best_lineup = []
+                    
+                    my_archetype_lists = [class_map[c] for c in my_classes]
+                    for my_deck_combo in itertools.product(*my_archetype_lists):
+                        total_wr = 0
+                        for opp_decks in meta_field:
+                            best_post_reveal_wr = 0
+                            # Test how this specific combo of 4 decks performs
+                            wr = simulate_conquest_bo5(random.sample(list(my_deck_combo), 3), random.sample(opp_decks, 3), win_rates, iterations=150)
+                            if wr > best_post_reveal_wr: 
+                                best_post_reveal_wr = wr
+                            total_wr += best_post_reveal_wr
+                        
+                        avg_wr = total_wr / len(meta_field)
+                        if avg_wr > best_wr:
+                            best_wr = avg_wr
+                            best_lineup = my_deck_combo
+
+                    st.success(f"### Optimal Archetypes to Build (Expected Field WR: {best_wr:.2f}%)")
+                    for d in best_lineup:
+                        st.write(f"- **{d}**")
+
+    # --- PHASE 3: MATCH DAY STRATEGY ---
+    elif phase == "Phase 3: Match Day Strategy (Ban & Lead)":
+        st.header("Phase 3: Match Day Ban Optimizer")
+        
         col1, col2 = st.columns(2)
-        with col1: my_lineup = st.multiselect("Your 4 Decks:", archetypes, max_selections=4)
+        with col1: my_classes = st.multiselect("Your 4 Classes:", all_classes, max_selections=4)
         with col2: opp_classes = st.multiselect("Opponent's 4 Classes:", all_classes, max_selections=4)
 
-        if len(my_lineup) == 4 and len(opp_classes) == 4:
+        if len(my_classes) == 4 and len(opp_classes) == 4:
+            st.write("---")
+            st.write("### Confirm Your Specific Archetypes")
+            my_lineup = []
+            arch_cols = st.columns(4)
+            for i, c in enumerate(my_classes):
+                with arch_cols[i]:
+                    selected_deck = st.selectbox(f"Your {c}:", class_map[c])
+                    my_lineup.append(selected_deck)
+            
+            st.write("---")
             if st.button("Generate Strategy"):
                 results = []
                 for ban_c in opp_classes:
@@ -234,81 +264,10 @@ if matchup_file:
                 st.metric("Expected Series Win Rate", f"{best_option['wr']:.1f}%")
                 st.info(f"👉 **Game 1 Lead:** {best_option['lead']}")
 
-    # --- PHASE 4: LIVE TRACKER ---
-    elif phase == "Phase 4: Live Tracker":
+    # --- PHASE 4: FOG OF WAR TRACKER ---
+    elif phase == "Phase 4: Fog of War Tracker":
         st.header("Phase 4: Fog of War Tracker")
         
         if 'match_active' not in st.session_state: st.session_state.match_active = False
         
-        if not st.session_state.match_active:
-            st.info("Input your 3 specific decks, and the opponent's 3 remaining CLASSES.")
-            my_u = st.multiselect("Your 3 Unbanned Decks", archetypes, max_selections=3)
-            opp_u = st.multiselect("Opponent's 3 Unbanned Classes", all_classes, max_selections=3)
-            
-            if st.button("Initialize Match"):
-                st.session_state.my_rem = my_u
-                st.session_state.opp_status = {c: "Unknown" for c in opp_u}
-                st.session_state.match_active = True
-                st.rerun()
-        else:
-            col1, col2 = st.columns(2)
-            with col1: st.subheader(f"Your Decks Left: {len(st.session_state.my_rem)}")
-            with col2: 
-                st.subheader("Opponent Status:")
-                for c, d in st.session_state.opp_status.items():
-                    st.write(f"- {c}: **{d}**")
-            
-            if not st.session_state.my_rem:
-                st.success("🎉 YOU WON! Report the score in Discord.")
-                if st.button("Reset"): st.session_state.match_active = False; st.rerun()
-            elif not st.session_state.opp_status:
-                st.error("💀 You lost. Save your screenshots.")
-                if st.button("Reset"): st.session_state.match_active = False; st.rerun()
-            else:
-                st.write("---")
-                st.write("### 🔍 Reveal Opponent Archetype")
-                reveal_c = st.selectbox("If they played an unknown deck, log it here:", [c for c, d in st.session_state.opp_status.items() if d == "Unknown"])
-                if reveal_c:
-                    reveal_d = st.selectbox(f"What {reveal_c} deck was it?", class_map[reveal_c])
-                    if st.button("Lock Archetype"):
-                        st.session_state.opp_status[reveal_c] = reveal_d
-                        st.rerun()
-
-                st.write("---")
-                best_lead, best_floor = None, -1
-                for my_deck in st.session_state.my_rem:
-                    worst_mu = 101
-                    for opp_c, opp_d in st.session_state.opp_status.items():
-                        if opp_d != "Unknown":
-                            mu = win_rates.get(my_deck, {}).get(opp_d, 0.5)
-                        else:
-                            ev = 0; p_total = 0
-                            for possible_d in class_map[opp_c]:
-                                p = get_archetype_prob(possible_d, arch_weights)
-                                ev += win_rates.get(my_deck, {}).get(possible_d, 0.5) * p
-                                p_total += p
-                            mu = ev / p_total if p_total > 0 else ev
-                        if mu < worst_mu: worst_mu = mu
-                        
-                    if worst_mu > best_floor:
-                        best_floor = worst_mu
-                        best_lead = my_deck
-                        
-                st.info(f"👉 **Recommended Next Pick:** {best_lead} (Weighted Floor: {best_floor*100:.1f}%)")
-
-                st.write("### ⚔️ Resolve Game")
-                r_col1, r_col2 = st.columns(2)
-                with r_col1:
-                    my_played = st.selectbox("Deck you played:", st.session_state.my_rem)
-                    if st.button("I Won"):
-                        st.session_state.my_rem.remove(my_played)
-                        st.rerun()
-                with r_col2:
-                    revealed_opp_decks = {c: d for c, d in st.session_state.opp_status.items() if d != "Unknown"}
-                    if revealed_opp_decks:
-                        opp_played_c = st.selectbox("Class they won with:", list(revealed_opp_decks.keys()))
-                        if st.button("They Won"):
-                            del st.session_state.opp_status[opp_played_c]
-                            st.rerun()
-                    else:
-                        st.warning("You must 'Reveal' their archetype above before you can log their win.")
+        if not st.session_state.match
