@@ -5,7 +5,7 @@ import random
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V11", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V12", layout="wide")
 
 def get_class_from_deck(deck_name):
     return deck_name.split()[-1]
@@ -165,7 +165,6 @@ if matchup_file:
                 st.write("---")
                 st.header("📊 Categorized Leaderboard")
                 
-                # Zone Buckets
                 zones = {
                     "🟩 The 'Margin of Error' Zone (< 0.5% Delta)": [],
                     "🟨 The 'Tiebreaker' Zone (0.5% - 1.5% Delta)": [],
@@ -187,7 +186,6 @@ if matchup_file:
                     elif delta < 3.0: zones["🟧 The 'Meaningful Edge' Zone (1.5% - 3.0% Delta)"].append(row_data)
                     else: zones["🟥 The 'Hard Counter' Zone (> 3.0% Delta)"].append(row_data)
 
-                # Render Tables
                 for zone_name, rows in zones.items():
                     if rows:
                         st.subheader(zone_name)
@@ -344,11 +342,15 @@ if matchup_file:
                 if st.button("Initialize Match"):
                     st.session_state.my_rem = my_u
                     st.session_state.opp_status = {c: "Unknown" for c in opp_u_classes}
+                    st.session_state.history = []  # Added History Tracker List
                     st.session_state.match_active = True
                     st.rerun()
         else:
             col1, col2 = st.columns(2)
-            with col1: st.subheader(f"Your Decks Left: {len(st.session_state.my_rem)}")
+            with col1: 
+                st.subheader("Your Decks Left:")
+                for d in st.session_state.my_rem:
+                    st.write(f"- **{d}**")
             with col2: 
                 st.subheader("Opponent Status:")
                 for c, d in st.session_state.opp_status.items():
@@ -400,18 +402,36 @@ if matchup_file:
                 st.info(f"👉 **Recommended Next Pick:** {best_lead} (Weighted Floor: {best_floor*100:.1f}%)")
 
                 st.write("### ⚔️ Resolve Game")
+                
+                # Added unified inputs to track the history exactly
                 r_col1, r_col2 = st.columns(2)
                 with r_col1:
                     my_played = st.selectbox("Deck you played:", st.session_state.my_rem)
+                with r_col2:
+                    opp_played_c = st.selectbox("Opponent class played:", list(st.session_state.opp_status.keys()))
+                
+                # Identify opponent's specific deck label for the history tracker
+                opp_d = st.session_state.opp_status[opp_played_c]
+                opp_name = opp_d if opp_d != "Unknown" else f"Unknown {opp_played_c}"
+                
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
                     if st.button("I Won"):
+                        st.session_state.history.append(f"🟢 **WIN:** {my_played} vs {opp_name}")
                         st.session_state.my_rem.remove(my_played)
                         st.rerun()
-                with r_col2:
-                    revealed_opp_decks = {c: d for c, d in st.session_state.opp_status.items() if d != "Unknown"}
-                    if revealed_opp_decks:
-                        opp_played_c = st.selectbox("Class they won with:", list(revealed_opp_decks.keys()))
+                with btn_col2:
+                    if opp_d == "Unknown":
+                        st.warning("⚠️ Reveal their exact archetype above before you log their win.")
+                    else:
                         if st.button("They Won"):
+                            st.session_state.history.append(f"🔴 **LOSS:** {my_played} vs {opp_name}")
                             del st.session_state.opp_status[opp_played_c]
                             st.rerun()
-                    else:
-                        st.warning("You must 'Reveal' their archetype above before you can log their win.")
+                            
+                # The New Running Match History
+                if st.session_state.get('history'):
+                    st.write("---")
+                    st.write("### 📜 Match History")
+                    for i, game_log in enumerate(st.session_state.history):
+                        st.write(f"**Game {i+1}:** {game_log}")
