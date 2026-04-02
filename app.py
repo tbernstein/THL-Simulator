@@ -366,4 +366,9 @@ if matchup_file:
                 with r_col2:
                     revealed_opp_decks = {c: d for c, d in st.session_state.opp_status.items() if d != "Unknown"}
                     if revealed_opp_decks:
-                        opp_played_c = st.selectbox("Class they won with:", list(revealed_opp_decks
+                        opp_played_c = st.selectbox("Class they won with:", list(revealed_opp_decks.keys()))
+                        if st.button("They Won"):
+                            del st.session_state.opp_status[opp_played_c]
+                            st.rerun()
+                    else:
+                        st.warning("You must 'Reveal' their archetype above before you can log their win.")
