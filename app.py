@@ -5,7 +5,7 @@ import random
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V12", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V13", layout="wide")
 
 def get_class_from_deck(deck_name):
     return deck_name.split()[-1]
@@ -342,7 +342,7 @@ if matchup_file:
                 if st.button("Initialize Match"):
                     st.session_state.my_rem = my_u
                     st.session_state.opp_status = {c: "Unknown" for c in opp_u_classes}
-                    st.session_state.history = []  # Added History Tracker List
+                    st.session_state.history = []
                     st.session_state.match_active = True
                     st.rerun()
         else:
@@ -403,14 +403,12 @@ if matchup_file:
 
                 st.write("### ⚔️ Resolve Game")
                 
-                # Added unified inputs to track the history exactly
                 r_col1, r_col2 = st.columns(2)
                 with r_col1:
                     my_played = st.selectbox("Deck you played:", st.session_state.my_rem)
                 with r_col2:
                     opp_played_c = st.selectbox("Opponent class played:", list(st.session_state.opp_status.keys()))
                 
-                # Identify opponent's specific deck label for the history tracker
                 opp_d = st.session_state.opp_status[opp_played_c]
                 opp_name = opp_d if opp_d != "Unknown" else f"Unknown {opp_played_c}"
                 
@@ -429,9 +427,14 @@ if matchup_file:
                             del st.session_state.opp_status[opp_played_c]
                             st.rerun()
                             
-                # The New Running Match History
-                if st.session_state.get('history'):
-                    st.write("---")
+            # The Match History is now OUTSIDE the win/loss conditional loop!
+            if st.session_state.get('history'):
+                st.write("---")
+                # Title dynamically changes if the match is officially over
+                if not st.session_state.my_rem or not st.session_state.opp_status:
+                    st.write("### 📜 Final Match Summary")
+                else:
                     st.write("### 📜 Match History")
-                    for i, game_log in enumerate(st.session_state.history):
-                        st.write(f"**Game {i+1}:** {game_log}")
+                    
+                for i, game_log in enumerate(st.session_state.history):
+                    st.write(f"**Game {i+1}:** {game_log}")
