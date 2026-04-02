@@ -5,7 +5,7 @@ import random
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V10", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V11", layout="wide")
 
 def get_class_from_deck(deck_name):
     return deck_name.split()[-1]
@@ -22,10 +22,8 @@ def get_weighted_classes(classes, class_weights, k=4):
 def get_archetype_prob(deck_name, arch_weights):
     return arch_weights.get(deck_name, 1.0)
 
-# Notice iterations are parameterized. Phase 3 will override this to 2000 for precision.
 def simulate_conquest_bo5(my_decks, opp_decks, win_rates, iterations=150):
     wins = 0
-    # Add seeded RNG to prevent Monte Carlo jitter
     rng = random.Random()
     rng.seed("".join(my_decks) + "".join(opp_decks))
     
@@ -140,7 +138,6 @@ if matchup_file:
                         opp_decks.append(best_d)
                     meta_field.append(opp_decks)
 
-                # Store all results for the stack rank
                 all_results = []
 
                 for my_class_combo in class_combos:
@@ -155,33 +152,55 @@ if matchup_file:
                     
                     avg_wr = total_wr / len(meta_field)
                     
-                    # Append this specific combination to our leaderboard
                     all_results.append({
                         "Lineup": ", ".join(my_class_combo),
                         "Expected WR": avg_wr
                     })
 
-                # Sort the results from highest WR to lowest
                 all_results = sorted(all_results, key=lambda x: x["Expected WR"], reverse=True)
-                
                 best_lineup = all_results[0]
+                top_wr = best_lineup['Expected WR']
                 
-                st.success(f"### 🏆 Optimal Lineup: {best_lineup['Lineup']} ({best_lineup['Expected WR']:.2f}%)")
-                
+                st.success(f"### 🏆 Absolute Peak Lineup: {best_lineup['Lineup']} ({top_wr:.2f}%)")
                 st.write("---")
-                st.subheader("📊 Full Stack Rank Leaderboard")
+                st.header("📊 Categorized Leaderboard")
                 
-                # Format percentages for clean display
-                formatted_results = []
+                # Zone Buckets
+                zones = {
+                    "🟩 The 'Margin of Error' Zone (< 0.5% Delta)": [],
+                    "🟨 The 'Tiebreaker' Zone (0.5% - 1.5% Delta)": [],
+                    "🟧 The 'Meaningful Edge' Zone (1.5% - 3.0% Delta)": [],
+                    "🟥 The 'Hard Counter' Zone (> 3.0% Delta)": []
+                }
+                
                 for i, r in enumerate(all_results):
-                    formatted_results.append({
+                    delta = top_wr - r["Expected WR"]
+                    row_data = {
                         "Rank": i + 1,
                         "Classes": r["Lineup"],
-                        "Expected Win Rate": f"{r['Expected WR']:.2f}%"
-                    })
-                
-                # Display as an interactive dataframe
-                st.dataframe(formatted_results, use_container_width=True, hide_index=True)
+                        "Expected WR": f"{r['Expected WR']:.2f}%",
+                        "Delta to #1": f"-{delta:.2f}%"
+                    }
+                    
+                    if delta < 0.5: zones["🟩 The 'Margin of Error' Zone (< 0.5% Delta)"].append(row_data)
+                    elif delta < 1.5: zones["🟨 The 'Tiebreaker' Zone (0.5% - 1.5% Delta)"].append(row_data)
+                    elif delta < 3.0: zones["🟧 The 'Meaningful Edge' Zone (1.5% - 3.0% Delta)"].append(row_data)
+                    else: zones["🟥 The 'Hard Counter' Zone (> 3.0% Delta)"].append(row_data)
+
+                # Render Tables
+                for zone_name, rows in zones.items():
+                    if rows:
+                        st.subheader(zone_name)
+                        if "Margin of Error" in zone_name:
+                            st.caption("These lineups are mathematically identical to the #1 spot. Pick your highest comfort classes from this list.")
+                        elif "Tiebreaker" in zone_name:
+                            st.caption("Slightly mathematically inferior, but completely viable if you are an expert pilot with these classes.")
+                        elif "Meaningful Edge" in zone_name:
+                            st.caption("You are actively sacrificing equity by picking these. Proceed with caution.")
+                        elif "Hard Counter" in zone_name:
+                            st.caption("Do not lock these classes. They are fundamentally countered by the current meta.")
+                            
+                        st.dataframe(rows, use_container_width=True, hide_index=True)
 
     # --- PHASE 2: ARCHETYPE OPTIMIZER ---
     elif phase == "Phase 2: Archetype Optimizer (Find Decks)":
@@ -274,7 +293,6 @@ if matchup_file:
                             for d in opp_combo: prob *= get_archetype_prob(d, arch_weights)
                             total_prob += prob
                             
-                            # Notice 2000 iterations here for exact precision
                             wr = simulate_conquest_bo5(my_rem, list(opp_combo), win_rates, iterations=2000)
                             expected_wr += (wr * prob)
                             
