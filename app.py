@@ -5,7 +5,7 @@ import random
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V9", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V10", layout="wide")
 
 def get_class_from_deck(deck_name):
     return deck_name.split()[-1]
@@ -22,10 +22,10 @@ def get_weighted_classes(classes, class_weights, k=4):
 def get_archetype_prob(deck_name, arch_weights):
     return arch_weights.get(deck_name, 1.0)
 
-def simulate_conquest_bo5(my_decks, opp_decks, win_rates, iterations=2000):
+# Notice iterations are parameterized. Phase 3 will override this to 2000 for precision.
+def simulate_conquest_bo5(my_decks, opp_decks, win_rates, iterations=150):
     wins = 0
-    # We use a seeded random instance here so the simulation is 100% consistent 
-    # every time you click the button for the exact same decks.
+    # Add seeded RNG to prevent Monte Carlo jitter
     rng = random.Random()
     rng.seed("".join(my_decks) + "".join(opp_decks))
     
@@ -128,8 +128,6 @@ if matchup_file:
         
         if st.button("Find Best 4 Classes to Lock (Takes ~10 sec)"):
             with st.spinner('Running Monte Carlo simulations against the overall meta...'):
-                best_overall_wr = 0
-                best_class_lineup = []
                 class_combos = list(itertools.combinations(all_classes, 4))
                 
                 meta_field = []
@@ -142,6 +140,9 @@ if matchup_file:
                         opp_decks.append(best_d)
                     meta_field.append(opp_decks)
 
+                # Store all results for the stack rank
+                all_results = []
+
                 for my_class_combo in class_combos:
                     my_archetype_lists = [class_map[c] for c in my_class_combo]
                     total_wr = 0
@@ -153,13 +154,34 @@ if matchup_file:
                         total_wr += best_post_reveal_wr
                     
                     avg_wr = total_wr / len(meta_field)
-                    if avg_wr > best_overall_wr:
-                        best_overall_wr = avg_wr
-                        best_class_lineup = my_class_combo
+                    
+                    # Append this specific combination to our leaderboard
+                    all_results.append({
+                        "Lineup": ", ".join(my_class_combo),
+                        "Expected WR": avg_wr
+                    })
 
-                st.success(f"### Expected Series WR: {best_overall_wr:.2f}%")
-                st.write("**Recommended Classes to Lock:**")
-                for c in best_class_lineup: st.write(f"- **{c}**")
+                # Sort the results from highest WR to lowest
+                all_results = sorted(all_results, key=lambda x: x["Expected WR"], reverse=True)
+                
+                best_lineup = all_results[0]
+                
+                st.success(f"### 🏆 Optimal Lineup: {best_lineup['Lineup']} ({best_lineup['Expected WR']:.2f}%)")
+                
+                st.write("---")
+                st.subheader("📊 Full Stack Rank Leaderboard")
+                
+                # Format percentages for clean display
+                formatted_results = []
+                for i, r in enumerate(all_results):
+                    formatted_results.append({
+                        "Rank": i + 1,
+                        "Classes": r["Lineup"],
+                        "Expected Win Rate": f"{r['Expected WR']:.2f}%"
+                    })
+                
+                # Display as an interactive dataframe
+                st.dataframe(formatted_results, use_container_width=True, hide_index=True)
 
     # --- PHASE 2: ARCHETYPE OPTIMIZER ---
     elif phase == "Phase 2: Archetype Optimizer (Find Decks)":
@@ -252,7 +274,8 @@ if matchup_file:
                             for d in opp_combo: prob *= get_archetype_prob(d, arch_weights)
                             total_prob += prob
                             
-                            wr = simulate_conquest_bo5(my_rem, list(opp_combo), win_rates)
+                            # Notice 2000 iterations here for exact precision
+                            wr = simulate_conquest_bo5(my_rem, list(opp_combo), win_rates, iterations=2000)
                             expected_wr += (wr * prob)
                             
                         expected_wr = expected_wr / total_prob if total_prob > 0 else expected_wr
@@ -324,7 +347,6 @@ if matchup_file:
                 st.write("### 🔍 Reveal Opponent Archetype")
                 reveal_c = st.selectbox("If they played an unknown deck, log it here:", [c for c, d in st.session_state.opp_status.items() if d == "Unknown"])
                 if reveal_c:
-                    # ADDED "Off Meta" as an explicit option at the top of the list
                     reveal_d = st.selectbox(f"What {reveal_c} deck was it?", ["Off Meta"] + class_map[reveal_c])
                     if st.button("Lock Archetype"):
                         st.session_state.opp_status[reveal_c] = reveal_d
@@ -336,17 +358,14 @@ if matchup_file:
                     worst_mu = 101
                     for opp_c, opp_d in st.session_state.opp_status.items():
                         if opp_d == "Off Meta":
-                            # Use Class Average Win Rate for Off-Meta Decks
                             c_decks = class_map[opp_c]
                             if c_decks:
                                 mu = sum(win_rates.get(my_deck, {}).get(d, 0.5) for d in c_decks) / len(c_decks)
                             else:
                                 mu = 0.5
                         elif opp_d != "Unknown":
-                            # Exact Matchup
                             mu = win_rates.get(my_deck, {}).get(opp_d, 0.5)
                         else:
-                            # Expected Value based on Meta Play Rates
                             ev = 0; p_total = 0
                             for possible_d in class_map[opp_c]:
                                 p = get_archetype_prob(possible_d, arch_weights)
