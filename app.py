@@ -270,4 +270,86 @@ if matchup_file:
         
         if 'match_active' not in st.session_state: st.session_state.match_active = False
         
-        if not st.session_state.match
+        if not st.session_state.match_active:
+            col1, col2 = st.columns(2)
+            with col1: my_u_classes = st.multiselect("Your 3 Unbanned Classes", all_classes, max_selections=3)
+            with col2: opp_u_classes = st.multiselect("Opponent's 3 Unbanned Classes", all_classes, max_selections=3)
+            
+            if len(my_u_classes) == 3 and len(opp_u_classes) == 3:
+                st.write("---")
+                st.write("### Confirm Your Unbanned Archetypes")
+                my_u = []
+                arch_cols = st.columns(3)
+                for i, c in enumerate(my_u_classes):
+                    with arch_cols[i]:
+                        selected_deck = st.selectbox(f"Your {c}:", class_map[c], key=f"p4_my_{c}")
+                        my_u.append(selected_deck)
+
+                st.write("---")
+                if st.button("Initialize Match"):
+                    st.session_state.my_rem = my_u
+                    st.session_state.opp_status = {c: "Unknown" for c in opp_u_classes}
+                    st.session_state.match_active = True
+                    st.rerun()
+        else:
+            col1, col2 = st.columns(2)
+            with col1: st.subheader(f"Your Decks Left: {len(st.session_state.my_rem)}")
+            with col2: 
+                st.subheader("Opponent Status:")
+                for c, d in st.session_state.opp_status.items():
+                    st.write(f"- {c}: **{d}**")
+            
+            if not st.session_state.my_rem:
+                st.success("🎉 YOU WON! Report the score in Discord.")
+                if st.button("Reset Tracker"): st.session_state.match_active = False; st.rerun()
+            elif not st.session_state.opp_status:
+                st.error("💀 You lost. Save your screenshots.")
+                if st.button("Reset Tracker"): st.session_state.match_active = False; st.rerun()
+            else:
+                st.write("---")
+                st.write("### 🔍 Reveal Opponent Archetype")
+                reveal_c = st.selectbox("If they played an unknown deck, log it here:", [c for c, d in st.session_state.opp_status.items() if d == "Unknown"])
+                if reveal_c:
+                    reveal_d = st.selectbox(f"What {reveal_c} deck was it?", class_map[reveal_c])
+                    if st.button("Lock Archetype"):
+                        st.session_state.opp_status[reveal_c] = reveal_d
+                        st.rerun()
+
+                st.write("---")
+                best_lead, best_floor = None, -1
+                for my_deck in st.session_state.my_rem:
+                    worst_mu = 101
+                    for opp_c, opp_d in st.session_state.opp_status.items():
+                        if opp_d != "Unknown":
+                            mu = win_rates.get(my_deck, {}).get(opp_d, 0.5)
+                        else:
+                            ev = 0; p_total = 0
+                            for possible_d in class_map[opp_c]:
+                                p = get_archetype_prob(possible_d, arch_weights)
+                                ev += win_rates.get(my_deck, {}).get(possible_d, 0.5) * p
+                                p_total += p
+                            mu = ev / p_total if p_total > 0 else ev
+                        if mu < worst_mu: worst_mu = mu
+                        
+                    if worst_mu > best_floor:
+                        best_floor = worst_mu
+                        best_lead = my_deck
+                        
+                st.info(f"👉 **Recommended Next Pick:** {best_lead} (Weighted Floor: {best_floor*100:.1f}%)")
+
+                st.write("### ⚔️ Resolve Game")
+                r_col1, r_col2 = st.columns(2)
+                with r_col1:
+                    my_played = st.selectbox("Deck you played:", st.session_state.my_rem)
+                    if st.button("I Won"):
+                        st.session_state.my_rem.remove(my_played)
+                        st.rerun()
+                with r_col2:
+                    revealed_opp_decks = {c: d for c, d in st.session_state.opp_status.items() if d != "Unknown"}
+                    if revealed_opp_decks:
+                        opp_played_c = st.selectbox("Class they won with:", list(revealed_opp_decks.keys()))
+                        if st.button("They Won"):
+                            del st.session_state.opp_status[opp_played_c]
+                            st.rerun()
+                    else:
+                        st.warning("You must 'Reveal' their archetype above before you can log their win.")
