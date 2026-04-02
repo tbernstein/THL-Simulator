@@ -5,7 +5,7 @@ import random
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V7", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V8", layout="wide")
 
 def get_class_from_deck(deck_name):
     return deck_name.split()[-1]
@@ -122,7 +122,7 @@ if matchup_file:
         st.header("Phase 1: Pre-Lock Class Optimization")
         
         if st.button("Find Best 4 Classes to Lock (Takes ~10 sec)"):
-            with st.spinner('Running Monte Carlo simulations against the meta...'):
+            with st.spinner('Running Monte Carlo simulations against the overall meta...'):
                 best_overall_wr = 0
                 best_class_lineup = []
                 class_combos = list(itertools.combinations(all_classes, 4))
@@ -159,44 +159,63 @@ if matchup_file:
     # --- PHASE 2: ARCHETYPE OPTIMIZER ---
     elif phase == "Phase 2: Archetype Optimizer (Find Decks)":
         st.header("Phase 2: Archetype Optimizer")
-        st.write("You selected your 4 classes. Now find the exact decklists to bring against the meta.")
+        st.write("You know both players' classes. Find the exact decklists to build to counter them.")
         
-        my_classes = st.multiselect("Select Your 4 Locked Classes:", all_classes, max_selections=4)
+        col1, col2 = st.columns(2)
+        with col1: my_classes = st.multiselect("Your 4 Locked Classes:", all_classes, max_selections=4)
+        with col2: opp_classes = st.multiselect("Opponent's 4 Revealed Classes:", all_classes, max_selections=4)
 
-        if len(my_classes) == 4:
+        if len(my_classes) == 4 and len(opp_classes) == 4:
             if st.button("Find Best Archetypes"):
-                with st.spinner("Simulating archetype combinations against the meta..."):
-                    # Generate the meta field
-                    meta_field = []
-                    for _ in range(100):
-                        opp_classes = get_weighted_classes(all_classes, class_weights, 4)
-                        opp_decks = []
-                        for c in opp_classes:
-                            options = class_map[c]
-                            best_d = max(options, key=lambda d: get_archetype_prob(d, arch_weights))
-                            opp_decks.append(best_d)
-                        meta_field.append(opp_decks)
+                with st.spinner("Simulating archetype combinations against their specific classes..."):
+                    
+                    # 1. Generate all possible archetype combos
+                    opp_combos = list(itertools.product(*[class_map[c] for c in opp_classes]))
+                    my_combos = list(itertools.product(*[class_map[c] for c in my_classes]))
 
-                    best_wr = 0
+                    # 2. Calculate Expected Value probabilities for opponent combos
+                    opp_probs = []
+                    for o_c in opp_combos:
+                        p = 1.0
+                        for d in o_c: p *= get_archetype_prob(d, arch_weights)
+                        opp_probs.append(p)
+                    total_p = sum(opp_probs)
+                    if total_p > 0: opp_probs = [p / total_p for p in opp_probs]
+                    else: opp_probs = [1.0 / len(opp_combos)] * len(opp_combos)
+
+                    best_wr = -1
                     best_lineup = []
                     
-                    my_archetype_lists = [class_map[c] for c in my_classes]
-                    for my_deck_combo in itertools.product(*my_archetype_lists):
-                        total_wr = 0
-                        for opp_decks in meta_field:
-                            best_post_reveal_wr = 0
-                            # Test how this specific combo of 4 decks performs
-                            wr = simulate_conquest_bo5(random.sample(list(my_deck_combo), 3), random.sample(opp_decks, 3), win_rates, iterations=150)
-                            if wr > best_post_reveal_wr: 
-                                best_post_reveal_wr = wr
-                            total_wr += best_post_reveal_wr
-                        
-                        avg_wr = total_wr / len(meta_field)
-                        if avg_wr > best_wr:
-                            best_wr = avg_wr
-                            best_lineup = my_deck_combo
+                    progress_bar = st.progress(0)
+                    total_my_combos = len(my_combos)
 
-                    st.success(f"### Optimal Archetypes to Build (Expected Field WR: {best_wr:.2f}%)")
+                    # 3. Test every one of your potential lineups
+                    for i, my_4 in enumerate(my_combos):
+                        expected_wr = 0
+                        for opp_4, prob in zip(opp_combos, opp_probs):
+                            
+                            # Heuristic Ban: Assume both players make the mathematically correct ban
+                            # My ban = The opp deck that has the highest winrate against my lineup
+                            my_ban = min(opp_4, key=lambda od: sum(win_rates.get(md, {}).get(od, 0.5) for md in my_4))
+                            # Opp ban = My deck that has the highest winrate against their lineup
+                            opp_ban = max(my_4, key=lambda md: sum(win_rates.get(md, {}).get(od, 0.5) for od in opp_4))
+
+                            my_3 = [d for d in my_4 if d != opp_ban]
+                            opp_3 = [d for d in opp_4 if d != my_ban]
+
+                            wr = simulate_conquest_bo5(my_3, opp_3, win_rates, iterations=150)
+                            expected_wr += wr * prob
+
+                        if expected_wr > best_wr:
+                            best_wr = expected_wr
+                            best_lineup = my_4
+                            
+                        # Update progress visually
+                        if i % max(1, total_my_combos // 10) == 0:
+                            progress_bar.progress(min(1.0, i / total_my_combos))
+
+                    progress_bar.empty()
+                    st.success(f"### Optimal Archetypes to Build (Targeted WR: {best_wr:.2f}%)")
                     for d in best_lineup:
                         st.write(f"- **{d}**")
 
@@ -347,9 +366,4 @@ if matchup_file:
                 with r_col2:
                     revealed_opp_decks = {c: d for c, d in st.session_state.opp_status.items() if d != "Unknown"}
                     if revealed_opp_decks:
-                        opp_played_c = st.selectbox("Class they won with:", list(revealed_opp_decks.keys()))
-                        if st.button("They Won"):
-                            del st.session_state.opp_status[opp_played_c]
-                            st.rerun()
-                    else:
-                        st.warning("You must 'Reveal' their archetype above before you can log their win.")
+                        opp_played_c = st.selectbox("Class they won with:", list(revealed_opp_decks
