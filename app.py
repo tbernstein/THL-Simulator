@@ -5,7 +5,7 @@ import random
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V8", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V9", layout="wide")
 
 def get_class_from_deck(deck_name):
     return deck_name.split()[-1]
@@ -159,7 +159,6 @@ if matchup_file:
     # --- PHASE 2: ARCHETYPE OPTIMIZER ---
     elif phase == "Phase 2: Archetype Optimizer (Find Decks)":
         st.header("Phase 2: Archetype Optimizer")
-        st.write("You know both players' classes. Find the exact decklists to build to counter them.")
         
         col1, col2 = st.columns(2)
         with col1: my_classes = st.multiselect("Your 4 Locked Classes:", all_classes, max_selections=4)
@@ -168,12 +167,9 @@ if matchup_file:
         if len(my_classes) == 4 and len(opp_classes) == 4:
             if st.button("Find Best Archetypes"):
                 with st.spinner("Simulating archetype combinations against their specific classes..."):
-                    
-                    # 1. Generate all possible archetype combos
                     opp_combos = list(itertools.product(*[class_map[c] for c in opp_classes]))
                     my_combos = list(itertools.product(*[class_map[c] for c in my_classes]))
 
-                    # 2. Calculate Expected Value probabilities for opponent combos
                     opp_probs = []
                     for o_c in opp_combos:
                         p = 1.0
@@ -189,15 +185,10 @@ if matchup_file:
                     progress_bar = st.progress(0)
                     total_my_combos = len(my_combos)
 
-                    # 3. Test every one of your potential lineups
                     for i, my_4 in enumerate(my_combos):
                         expected_wr = 0
                         for opp_4, prob in zip(opp_combos, opp_probs):
-                            
-                            # Heuristic Ban: Assume both players make the mathematically correct ban
-                            # My ban = The opp deck that has the highest winrate against my lineup
                             my_ban = min(opp_4, key=lambda od: sum(win_rates.get(md, {}).get(od, 0.5) for md in my_4))
-                            # Opp ban = My deck that has the highest winrate against their lineup
                             opp_ban = max(my_4, key=lambda md: sum(win_rates.get(md, {}).get(od, 0.5) for od in opp_4))
 
                             my_3 = [d for d in my_4 if d != opp_ban]
@@ -210,7 +201,6 @@ if matchup_file:
                             best_wr = expected_wr
                             best_lineup = my_4
                             
-                        # Update progress visually
                         if i % max(1, total_my_combos // 10) == 0:
                             progress_bar.progress(min(1.0, i / total_my_combos))
 
@@ -329,7 +319,8 @@ if matchup_file:
                 st.write("### 🔍 Reveal Opponent Archetype")
                 reveal_c = st.selectbox("If they played an unknown deck, log it here:", [c for c, d in st.session_state.opp_status.items() if d == "Unknown"])
                 if reveal_c:
-                    reveal_d = st.selectbox(f"What {reveal_c} deck was it?", class_map[reveal_c])
+                    # ADDED "Off Meta" as an explicit option at the top of the list
+                    reveal_d = st.selectbox(f"What {reveal_c} deck was it?", ["Off Meta"] + class_map[reveal_c])
                     if st.button("Lock Archetype"):
                         st.session_state.opp_status[reveal_c] = reveal_d
                         st.rerun()
@@ -339,15 +330,25 @@ if matchup_file:
                 for my_deck in st.session_state.my_rem:
                     worst_mu = 101
                     for opp_c, opp_d in st.session_state.opp_status.items():
-                        if opp_d != "Unknown":
+                        if opp_d == "Off Meta":
+                            # Use Class Average Win Rate for Off-Meta Decks
+                            c_decks = class_map[opp_c]
+                            if c_decks:
+                                mu = sum(win_rates.get(my_deck, {}).get(d, 0.5) for d in c_decks) / len(c_decks)
+                            else:
+                                mu = 0.5
+                        elif opp_d != "Unknown":
+                            # Exact Matchup
                             mu = win_rates.get(my_deck, {}).get(opp_d, 0.5)
                         else:
+                            # Expected Value based on Meta Play Rates
                             ev = 0; p_total = 0
                             for possible_d in class_map[opp_c]:
                                 p = get_archetype_prob(possible_d, arch_weights)
                                 ev += win_rates.get(my_deck, {}).get(possible_d, 0.5) * p
                                 p_total += p
                             mu = ev / p_total if p_total > 0 else ev
+                            
                         if mu < worst_mu: worst_mu = mu
                         
                     if worst_mu > best_floor:
