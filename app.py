@@ -314,26 +314,28 @@ if matchup_file:
             st.write("---")
             if st.button("Generate Ban Matrix & Strategy"):
                 with st.spinner("Calculating the Game Theory Nash Equilibrium for all Ban Scenarios..."):
-                    # Generate the combinations for the opponent
-                    opp_combos = list(itertools.product(*[class_map[c] for c in opp_classes]))
                     
-                    # Store the EV for the Pandas Heatmap DataFrame
                     ban_matrix_data = {}
                     
-                    worst_case_wr_overall = 101
                     best_my_ban_overall = None
+                    best_guaranteed_wr = -1
                     optimal_leads_payoff = None
                     
-                    for my_ban in my_lineup:
-                        ban_matrix_data[my_ban] = {}
-                        my_rem = [d for d in my_lineup if d != my_ban]
+                    # Outer loop: What I choose to ban from them (Rows)
+                    for opp_ban_c in opp_classes: 
+                        row_label = f"I Ban {opp_ban_c}"
+                        ban_matrix_data[row_label] = {}
                         
-                        expected_wr_for_my_ban = 0
-                        total_prob_for_my_ban = 0
+                        rem_classes = [c for c in opp_classes if c != opp_ban_c]
+                        opp_combos_filtered = list(itertools.product(*[class_map[c] for c in rem_classes]))
                         
-                        for opp_ban_c in opp_classes:
-                            rem_classes = [c for c in opp_classes if c != opp_ban_c]
-                            opp_combos_filtered = list(itertools.product(*[class_map[c] for c in rem_classes]))
+                        worst_wr_for_this_ban = 101 
+                        leads_for_this_ban = None
+                        
+                        # Inner loop: What they choose to ban from me (Columns)
+                        for my_ban in my_lineup: 
+                            col_label = f"They Ban {my_ban}"
+                            my_rem = [d for d in my_lineup if d != my_ban]
                             
                             expected_wr = 0
                             total_prob = 0
@@ -347,16 +349,13 @@ if matchup_file:
                                 expected_wr += (wr * prob)
                                 
                             ev_for_this_ban_pair = expected_wr / total_prob if total_prob > 0 else expected_wr
-                            # Store for DataFrame (Columns = Opp Ban, Rows = My Ban)
-                            ban_matrix_data[my_ban][f"Opp Bans {opp_ban_c}"] = round(ev_for_this_ban_pair, 2)
+                            ban_matrix_data[row_label][col_label] = round(ev_for_this_ban_pair, 2)
                             
-                            # Heuristic for my worst-case scenario (Assuming opp bans perfectly against me)
-                            if ev_for_this_ban_pair < worst_case_wr_overall:
-                                worst_case_wr_overall = ev_for_this_ban_pair
-                                best_my_ban_overall = my_ban
+                            # Minimax logic: Assume opponent picks the ban that hurts you the most
+                            if ev_for_this_ban_pair < worst_wr_for_this_ban:
+                                worst_wr_for_this_ban = ev_for_this_ban_pair
                                 
-                                # Generate the Game Theory Lead matrix for this optimal ban
-                                optimal_leads_payoff = {md: {oc: 0 for oc in rem_classes} for md in my_rem}
+                                leads_for_this_ban = {md: {oc: 0 for oc in rem_classes} for md in my_rem}
                                 for md in my_rem:
                                     for oc in rem_classes:
                                         ev_lead = 0
@@ -365,11 +364,17 @@ if matchup_file:
                                             p = get_archetype_prob(od, arch_weights)
                                             ev_lead += win_rates.get(md, {}).get(od, 0.5) * p
                                             lead_prob += p
-                                        optimal_leads_payoff[md][oc] = ev_lead / lead_prob if lead_prob > 0 else ev_lead
+                                        leads_for_this_ban[md][oc] = ev_lead / lead_prob if lead_prob > 0 else ev_lead
+
+                        # Maximize your floor: Find the ban that gives you the best worst-case scenario
+                        if worst_wr_for_this_ban > best_guaranteed_wr:
+                            best_guaranteed_wr = worst_wr_for_this_ban
+                            best_my_ban_overall = opp_ban_c
+                            optimal_leads_payoff = leads_for_this_ban
                 
                 st.success(f"### 🛑 Mathematically Optimal Ban: {best_my_ban_overall}")
                 
-                # --- NEW FEATURE 1: NASH EQUILIBRIUM MIXED QUEUE ---
+                # --- NASH EQUILIBRIUM MIXED QUEUE ---
                 nash_strategy = get_nash_equilibrium(optimal_leads_payoff)
                 
                 st.info("### 🎲 Game 1 Nash Equilibrium (Unexploitable Lead)")
@@ -379,16 +384,15 @@ if matchup_file:
                 
                 st.write("---")
                 
-                # --- NEW FEATURE 2: THE BAN HEAT MAP MATRIX ---
+                # --- THE BAN HEAT MAP MATRIX ---
                 st.subheader("🗺️ The Complete Ban Matrix")
                 st.write("Rows are **Your Bans**, Columns are **Their Bans**. The numbers are your Expected Series Win Rate.")
                 
+                # By creating the DataFrame and transposing (.T), the row_labels become the index and col_labels become columns
                 df_matrix = pd.DataFrame(ban_matrix_data).T
-                # Apply a red-yellow-green background gradient. High numbers = Green.
                 styled_df = df_matrix.style.background_gradient(cmap='RdYlGn', axis=None, vmin=df_matrix.values.min(), vmax=df_matrix.values.max())
                 st.dataframe(styled_df, use_container_width=True)
                 st.caption("If the Optimal Ban forces you to play against a deck you hate, look at the grid above to find a slightly mathematically inferior ban that gives you a better comfort matchup.")
-
     # --- PHASE 4: FOG OF WAR TRACKER ---
     elif phase == "Phase 4: Fog of War Tracker":
         st.header("Phase 4: Fog of War Tracker")
