@@ -110,7 +110,7 @@ def load_vs_frequencies(uploaded_file):
     return freqs
 
 # --- UI ---
-st.title("🛡️ THL Strategist: Legacy Division")
+st.title("🛡️ THL Strategist: Command Center V15")
 
 st.sidebar.header("vS Raw Data Uploads")
 matchup_file = st.sidebar.file_uploader("1. Matchup Table (.csv)", type=['csv'])
@@ -139,8 +139,8 @@ if matchup_file:
 
     phase = st.sidebar.selectbox("Workflow Step", [
         "Phase 1: Lineup Builder (Find Classes)", 
-        "Phase 2: Archetype Optimizer (Find Decks)", 
-        "Phase 3: Match Day Strategy (Ban Matrix & Nash)",
+        "Phase 2: Archetype Optimizer (Exploitative)", 
+        "Phase 3: Match Day Strategy (Exploitative Ban)",
         "Phase 4: Fog of War Tracker"
     ])
 
@@ -241,7 +241,7 @@ if matchup_file:
                         st.dataframe(rows, use_container_width=True, hide_index=True)
 
     # --- PHASE 2: ARCHETYPE OPTIMIZER ---
-    elif phase == "Phase 2: Archetype Optimizer (Find Decks)":
+    elif phase == "Phase 2: Archetype Optimizer (Exploitative)":
         st.header("Phase 2: Archetype Optimizer")
         
         col1, col2 = st.columns(2)
@@ -250,7 +250,7 @@ if matchup_file:
 
         if len(my_classes) == 4 and len(opp_classes) == 4:
             if st.button("Find Best Archetypes"):
-                with st.spinner("Simulating archetype combinations against their specific classes..."):
+                with st.spinner("Simulating exploitative archetype combinations (Assuming they ban based on meta expectations)..."):
                     opp_combos = list(itertools.product(*[class_map[c] for c in opp_classes]))
                     my_combos = list(itertools.product(*[class_map[c] for c in my_classes]))
 
@@ -269,14 +269,20 @@ if matchup_file:
                     progress_bar = st.progress(0)
                     total_my_combos = len(my_combos)
 
+                    # Opponent assumes you have the most popular deck for each class
+                    my_assumed_4 = [max(class_map[c], key=lambda d: get_archetype_prob(d, arch_weights)) for c in my_classes]
+
                     for i, my_4 in enumerate(my_combos):
                         expected_wr = 0
                         for opp_4, prob in zip(opp_combos, opp_probs):
-                            my_ban = min(opp_4, key=lambda od: sum(win_rates.get(md, {}).get(od, 0.5) for md in my_4))
-                            opp_ban = max(my_4, key=lambda md: sum(win_rates.get(md, {}).get(od, 0.5) for od in opp_4))
+                            # What I ban from them
+                            my_ban_c = min(opp_classes, key=lambda oc: sum(win_rates.get(md, {}).get(next(od for od in opp_4 if get_class_from_deck(od) == oc), 0.5) for md in my_4))
+                            
+                            # What they ban from me (They assume I am playing my_assumed_4)
+                            opp_ban_c = max(my_classes, key=lambda mc: sum(win_rates.get(next(md for md in my_assumed_4 if get_class_from_deck(md) == mc), {}).get(od, 0.5) for od in opp_4))
 
-                            my_3 = [d for d in my_4 if d != opp_ban]
-                            opp_3 = [d for d in opp_4 if d != my_ban]
+                            my_3 = [d for d in my_4 if get_class_from_deck(d) != opp_ban_c]
+                            opp_3 = [d for d in opp_4 if get_class_from_deck(d) != my_ban_c]
 
                             wr = simulate_conquest_bo5(my_3, opp_3, win_rates, iterations=150)
                             expected_wr += wr * prob
@@ -289,12 +295,13 @@ if matchup_file:
                             progress_bar.progress(min(1.0, i / total_my_combos))
 
                     progress_bar.empty()
-                    st.success(f"### Optimal Archetypes to Build (Targeted WR: {best_wr:.2f}%)")
+                    st.success(f"### 🎯 Optimal Archetypes to Build (Exploitative Target WR: {best_wr:.2f}%)")
+                    st.caption(f"This lineup explicitly leverages the fact that your opponent likely expects you to bring **{', '.join(my_assumed_4)}**.")
                     for d in best_lineup:
                         st.write(f"- **{d}**")
 
     # --- PHASE 3: MATCH DAY STRATEGY ---
-    elif phase == "Phase 3: Match Day Strategy (Ban Matrix & Nash)":
+    elif phase == "Phase 3: Match Day Strategy (Exploitative Ban)":
         st.header("Phase 3: Match Day Ban Optimizer")
         
         col1, col2 = st.columns(2)
@@ -312,87 +319,111 @@ if matchup_file:
                     my_lineup.append(selected_deck)
             
             st.write("---")
-            if st.button("Generate Ban Matrix & Strategy"):
-                with st.spinner("Calculating the Game Theory Nash Equilibrium for all Ban Scenarios..."):
+            if st.button("Generate Exploitative Ban Strategy"):
+                with st.spinner("Calculating the Exploitative Ban Strategy based on Meta Assumptions..."):
                     
                     ban_matrix_data = {}
+                    optimal_ban_evs = {}
                     
-                    best_my_ban_overall = None
-                    best_guaranteed_wr = -1
-                    optimal_leads_payoff = None
+                    # They assume you have the most popular meta decks
+                    my_assumed_4 = [max(class_map[c], key=lambda d: get_archetype_prob(d, arch_weights)) for c in my_classes]
+                    opp_combos_4 = list(itertools.product(*[class_map[c] for c in opp_classes]))
                     
-                    # Outer loop: What I choose to ban from them (Rows)
+                    # Pre-calculate their predicted ban for every possible 4-deck combo they might have
+                    their_predicted_ban_for_combo = {}
+                    for opp_combo_4 in opp_combos_4:
+                        predicted_their_ban_c = max(my_classes, key=lambda mc: sum(win_rates.get(next(md for md in my_assumed_4 if get_class_from_deck(md) == mc), {}).get(od, 0.5) for od in opp_combo_4))
+                        their_predicted_ban_for_combo[opp_combo_4] = predicted_their_ban_c
+                    
                     for opp_ban_c in opp_classes: 
                         row_label = f"I Ban {opp_ban_c}"
                         ban_matrix_data[row_label] = {}
                         
-                        rem_classes = [c for c in opp_classes if c != opp_ban_c]
-                        opp_combos_filtered = list(itertools.product(*[class_map[c] for c in rem_classes]))
-                        
-                        worst_wr_for_this_ban = 101 
-                        leads_for_this_ban = None
-                        
-                        # Inner loop: What they choose to ban from me (Columns)
-                        for my_ban in my_lineup: 
-                            col_label = f"They Ban {my_ban}"
-                            my_rem = [d for d in my_lineup if d != my_ban]
+                        # Build the Ban Matrix visually (For all hypothetical bans)
+                        for my_ban_c in my_classes: 
+                            col_label = f"They Ban {my_ban_c}"
+                            my_rem = [d for d in my_lineup if get_class_from_deck(d) != my_ban_c]
                             
                             expected_wr = 0
                             total_prob = 0
                             
-                            for opp_combo in opp_combos_filtered:
+                            for opp_combo in opp_combos_4:
                                 prob = 1.0
                                 for d in opp_combo: prob *= get_archetype_prob(d, arch_weights)
                                 total_prob += prob
                                 
-                                wr = simulate_conquest_bo5(my_rem, list(opp_combo), win_rates, iterations=1500)
+                                opp_rem = [d for d in opp_combo if get_class_from_deck(d) != opp_ban_c]
+                                wr = simulate_conquest_bo5(my_rem, opp_rem, win_rates, iterations=1500)
                                 expected_wr += (wr * prob)
                                 
-                            ev_for_this_ban_pair = expected_wr / total_prob if total_prob > 0 else expected_wr
-                            ban_matrix_data[row_label][col_label] = round(ev_for_this_ban_pair, 2)
+                            ban_matrix_data[row_label][col_label] = round(expected_wr / total_prob if total_prob > 0 else expected_wr, 2)
                             
-                            # Minimax logic: Assume opponent picks the ban that hurts you the most
-                            if ev_for_this_ban_pair < worst_wr_for_this_ban:
-                                worst_wr_for_this_ban = ev_for_this_ban_pair
-                                
-                                leads_for_this_ban = {md: {oc: 0 for oc in rem_classes} for md in my_rem}
-                                for md in my_rem:
-                                    for oc in rem_classes:
-                                        ev_lead = 0
-                                        lead_prob = 0
-                                        for od in class_map[oc]:
-                                            p = get_archetype_prob(od, arch_weights)
-                                            ev_lead += win_rates.get(md, {}).get(od, 0.5) * p
-                                            lead_prob += p
-                                        leads_for_this_ban[md][oc] = ev_lead / lead_prob if lead_prob > 0 else ev_lead
-
-                        # Maximize your floor: Find the ban that gives you the best worst-case scenario
-                        if worst_wr_for_this_ban > best_guaranteed_wr:
-                            best_guaranteed_wr = worst_wr_for_this_ban
-                            best_my_ban_overall = opp_ban_c
-                            optimal_leads_payoff = leads_for_this_ban
+                        # Calculate your true EXPLOITATIVE EV if you ban opp_ban_c
+                        exploitative_wr = 0
+                        total_prob_exploit = 0
+                        
+                        their_predicted_bans_for_this_row = {c: 0 for c in my_classes}
+                        
+                        for opp_combo in opp_combos_4:
+                            prob = 1.0
+                            for d in opp_combo: prob *= get_archetype_prob(d, arch_weights)
+                            total_prob_exploit += prob
+                            
+                            # Opponent bans based on their false assumption
+                            predicted_their_ban_c = their_predicted_ban_for_combo[opp_combo]
+                            their_predicted_bans_for_this_row[predicted_their_ban_c] += prob
+                            
+                            my_rem = [d for d in my_lineup if get_class_from_deck(d) != predicted_their_ban_c]
+                            opp_rem = [d for d in opp_combo if get_class_from_deck(d) != opp_ban_c]
+                            
+                            wr = simulate_conquest_bo5(my_rem, opp_rem, win_rates, iterations=1500)
+                            exploitative_wr += (wr * prob)
+                            
+                        optimal_ban_evs[opp_ban_c] = exploitative_wr / total_prob_exploit if total_prob_exploit > 0 else exploitative_wr
+                    
+                    best_my_ban_overall = max(optimal_ban_evs, key=optimal_ban_evs.get)
+                    
+                st.success(f"### 🛑 Exploitative Optimal Ban: {best_my_ban_overall} ({optimal_ban_evs[best_my_ban_overall]:.2f}% Expected Win Rate)")
                 
-                st.success(f"### 🛑 Mathematically Optimal Ban: {best_my_ban_overall}")
+                st.info("### 🧠 The 'Mind Reader' Logic")
+                st.write(f"The tool no longer assumes perfect opponent play. It assumes your opponent expects you to bring **{', '.join(my_assumed_4)}**.")
+                st.write(f"By banning **{best_my_ban_overall}**, you are taking the path that maximizes your win rate given their predictable human behavior.")
+                
+                st.write("---")
                 
                 # --- NASH EQUILIBRIUM MIXED QUEUE ---
+                most_likely_their_ban = max(their_predicted_bans_for_this_row, key=their_predicted_bans_for_this_row.get)
+                my_rem_nash = [d for d in my_lineup if get_class_from_deck(d) != most_likely_their_ban]
+                opp_rem_classes = [c for c in opp_classes if c != best_my_ban_overall]
+                
+                optimal_leads_payoff = {md: {oc: 0 for oc in opp_rem_classes} for md in my_rem_nash}
+                for md in my_rem_nash:
+                    for oc in opp_rem_classes:
+                        ev_lead = 0
+                        lead_prob = 0
+                        for od in class_map[oc]:
+                            p = get_archetype_prob(od, arch_weights)
+                            ev_lead += win_rates.get(md, {}).get(od, 0.5) * p
+                            lead_prob += p
+                        optimal_leads_payoff[md][oc] = ev_lead / lead_prob if lead_prob > 0 else ev_lead
+                
                 nash_strategy = get_nash_equilibrium(optimal_leads_payoff)
                 
-                st.info("### 🎲 Game 1 Nash Equilibrium (Unexploitable Lead)")
-                st.write("To prevent your opponent from predicting your lead, roll a die or use a random number generator and queue your decks according to these exact probabilities:")
+                st.info(f"### 🎲 Game 1 Strategy (Assuming they ban {most_likely_their_ban})")
+                st.write("If they fall for the trap and ban as predicted, queue your decks using these exact probabilities to remain unexploitable:")
                 for deck, pct in sorted(nash_strategy.items(), key=lambda x: x[1], reverse=True):
                     st.write(f"- **{deck}:** {pct:.1f}%")
-                
+
                 st.write("---")
                 
                 # --- THE BAN HEAT MAP MATRIX ---
                 st.subheader("🗺️ The Complete Ban Matrix")
                 st.write("Rows are **Your Bans**, Columns are **Their Bans**. The numbers are your Expected Series Win Rate.")
                 
-                # By creating the DataFrame and transposing (.T), the row_labels become the index and col_labels become columns
                 df_matrix = pd.DataFrame(ban_matrix_data).T
                 styled_df = df_matrix.style.background_gradient(cmap='RdYlGn', axis=None, vmin=df_matrix.values.min(), vmax=df_matrix.values.max())
                 st.dataframe(styled_df, use_container_width=True)
-                st.caption("If the Optimal Ban forces you to play against a deck you hate, look at the grid above to find a slightly mathematically inferior ban that gives you a better comfort matchup.")
+
     # --- PHASE 4: FOG OF WAR TRACKER ---
     elif phase == "Phase 4: Fog of War Tracker":
         st.header("Phase 4: Fog of War Tracker")
@@ -450,7 +481,6 @@ if matchup_file:
 
                 st.write("---")
                 
-                # --- NEW FEATURE: LIVE NASH EQUILIBRIUM FOR NEXT GAME ---
                 live_payoff_matrix = {md: {oc: 0 for oc in st.session_state.opp_status.keys()} for md in st.session_state.my_rem}
                 
                 for my_deck in st.session_state.my_rem:
