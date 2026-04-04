@@ -2,10 +2,12 @@ import streamlit as st
 import csv
 import itertools
 import random
+import statistics
+import pandas as pd
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V13", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V15", layout="wide")
 
 def get_class_from_deck(deck_name):
     return deck_name.split()[-1]
@@ -36,6 +38,28 @@ def simulate_conquest_bo5(my_decks, opp_decks, win_rates, iterations=150):
             else: opp_rem.remove(opp_p)
         if not my_rem: wins += 1
     return (wins / iterations) * 100
+
+# Fictitious Play Algorithm to find Game Theory Nash Equilibrium
+def get_nash_equilibrium(payoff_matrix, iterations=5000):
+    my_decks = list(payoff_matrix.keys())
+    if not my_decks: return {}
+    opp_decks = list(payoff_matrix[my_decks[0]].keys())
+    if not opp_decks: return {d: 100.0 for d in my_decks}
+    
+    my_counts = {d: 0 for d in my_decks}
+    opp_counts = {d: 0 for d in opp_decks}
+    
+    for _ in range(iterations):
+        # Best response for Me
+        best_my = max(my_decks, key=lambda md: sum(payoff_matrix[md][od] * opp_counts[od] for od in opp_decks) / max(1, sum(opp_counts.values())))
+        # Best response for Opponent (They want to minimize my EV)
+        best_opp = min(opp_decks, key=lambda od: sum(payoff_matrix[md][od] * my_counts[md] for md in my_decks) / max(1, sum(my_counts.values())))
+        
+        my_counts[best_my] += 1
+        opp_counts[best_opp] += 1
+        
+    total = sum(my_counts.values())
+    return {d: (c / total) * 100 for d, c in my_counts.items() if c > 0}
 
 # --- vS DATA LOADERS ---
 def load_vs_matchups(uploaded_file):
@@ -116,7 +140,7 @@ if matchup_file:
     phase = st.sidebar.selectbox("Workflow Step", [
         "Phase 1: Lineup Builder (Find Classes)", 
         "Phase 2: Archetype Optimizer (Find Decks)", 
-        "Phase 3: Match Day Strategy (Ban & Lead)",
+        "Phase 3: Match Day Strategy (Ban Matrix & Nash)",
         "Phase 4: Fog of War Tracker"
     ])
 
@@ -142,19 +166,29 @@ if matchup_file:
 
                 for my_class_combo in class_combos:
                     my_archetype_lists = [class_map[c] for c in my_class_combo]
-                    total_wr = 0
+                    
+                    matchup_wrs = []
+                    
                     for opp_decks in meta_field:
                         best_post_reveal_wr = 0
                         for my_deck_combo in itertools.product(*my_archetype_lists):
                             wr = simulate_conquest_bo5(random.sample(list(my_deck_combo), 3), random.sample(opp_decks, 3), win_rates, iterations=100)
                             if wr > best_post_reveal_wr: best_post_reveal_wr = wr
-                        total_wr += best_post_reveal_wr
+                        matchup_wrs.append(best_post_reveal_wr)
                     
-                    avg_wr = total_wr / len(meta_field)
+                    avg_wr = statistics.mean(matchup_wrs)
+                    floor_wr = min(matchup_wrs)
+                    ceiling_wr = max(matchup_wrs)
+                    std_dev = statistics.stdev(matchup_wrs) if len(matchup_wrs) > 1 else 0.0
+                    favored_pct = sum(1 for w in matchup_wrs if w > 50.0) / len(matchup_wrs) * 100
                     
                     all_results.append({
                         "Lineup": ", ".join(my_class_combo),
-                        "Expected WR": avg_wr
+                        "Expected WR": avg_wr,
+                        "Floor": floor_wr,
+                        "Ceiling": ceiling_wr,
+                        "Std Dev": std_dev,
+                        "Favored %": favored_pct
                     })
 
                 all_results = sorted(all_results, key=lambda x: x["Expected WR"], reverse=True)
@@ -163,7 +197,18 @@ if matchup_file:
                 
                 st.success(f"### 🏆 Absolute Peak Lineup: {best_lineup['Lineup']} ({top_wr:.2f}%)")
                 st.write("---")
-                st.header("📊 Categorized Leaderboard")
+                
+                with st.expander("📖 How to Read the Advanced Metrics", expanded=False):
+                    st.markdown("""
+                    **In Conquest, average win rate isn't everything. Use these metrics to pick a lineup that matches your risk tolerance:**
+                    * **Expected WR (Mean):** Your overall average win probability against the expected meta.
+                    * **The Floor (Min):** Your absolute worst-case scenario. A high floor means the lineup is safe and hard to sweep.
+                    * **The Ceiling (Max):** Your absolute best-case scenario. High ceilings indicate you hard-counter specific popular decks.
+                    * **Volatility (Std Dev):** How much your win rate swings from matchup to matchup. Lower means 50/50, skill-testing games. Higher means polarizing, rock-paper-scissors games.
+                    * **% Favored:** The percentage of meta lineups where you have a >50% chance to win. Often more important than the raw Expected WR!
+                    """)
+                
+                st.header("📊 Categorized Analytics Leaderboard")
                 
                 zones = {
                     "🟩 The 'Margin of Error' Zone (< 0.5% Delta)": [],
@@ -177,7 +222,11 @@ if matchup_file:
                     row_data = {
                         "Rank": i + 1,
                         "Classes": r["Lineup"],
-                        "Expected WR": f"{r['Expected WR']:.2f}%",
+                        "Expected WR": f"{r['Expected WR']:.1f}%",
+                        "Floor (Min)": f"{r['Floor']:.1f}%",
+                        "Ceiling (Max)": f"{r['Ceiling']:.1f}%",
+                        "Volatility": f"±{r['Std Dev']:.1f}%",
+                        "% Favored": f"{r['Favored %']:.1f}%",
                         "Delta to #1": f"-{delta:.2f}%"
                     }
                     
@@ -189,15 +238,6 @@ if matchup_file:
                 for zone_name, rows in zones.items():
                     if rows:
                         st.subheader(zone_name)
-                        if "Margin of Error" in zone_name:
-                            st.caption("These lineups are mathematically identical to the #1 spot. Pick your highest comfort classes from this list.")
-                        elif "Tiebreaker" in zone_name:
-                            st.caption("Slightly mathematically inferior, but completely viable if you are an expert pilot with these classes.")
-                        elif "Meaningful Edge" in zone_name:
-                            st.caption("You are actively sacrificing equity by picking these. Proceed with caution.")
-                        elif "Hard Counter" in zone_name:
-                            st.caption("Do not lock these classes. They are fundamentally countered by the current meta.")
-                            
                         st.dataframe(rows, use_container_width=True, hide_index=True)
 
     # --- PHASE 2: ARCHETYPE OPTIMIZER ---
@@ -254,7 +294,7 @@ if matchup_file:
                         st.write(f"- **{d}**")
 
     # --- PHASE 3: MATCH DAY STRATEGY ---
-    elif phase == "Phase 3: Match Day Strategy (Ban & Lead)":
+    elif phase == "Phase 3: Match Day Strategy (Ban Matrix & Nash)":
         st.header("Phase 3: Match Day Ban Optimizer")
         
         col1, col2 = st.columns(2)
@@ -272,50 +312,82 @@ if matchup_file:
                     my_lineup.append(selected_deck)
             
             st.write("---")
-            if st.button("Generate Strategy"):
-                results = []
-                for ban_c in opp_classes:
-                    rem_classes = [c for c in opp_classes if c != ban_c]
-                    opp_combos = list(itertools.product(*[class_map[c] for c in rem_classes]))
+            if st.button("Generate Ban Matrix & Strategy"):
+                with st.spinner("Calculating the Game Theory Nash Equilibrium for all Ban Scenarios..."):
+                    # Generate the combinations for the opponent
+                    opp_combos = list(itertools.product(*[class_map[c] for c in opp_classes]))
                     
-                    worst_case_wr = 101
-                    best_lead_for_this_ban = None
+                    # Store the EV for the Pandas Heatmap DataFrame
+                    ban_matrix_data = {}
+                    
+                    worst_case_wr_overall = 101
+                    best_my_ban_overall = None
+                    optimal_leads_payoff = None
                     
                     for my_ban in my_lineup:
+                        ban_matrix_data[my_ban] = {}
                         my_rem = [d for d in my_lineup if d != my_ban]
-                        expected_wr = 0
-                        total_prob = 0
                         
-                        for opp_combo in opp_combos:
-                            prob = 1.0
-                            for d in opp_combo: prob *= get_archetype_prob(d, arch_weights)
-                            total_prob += prob
-                            
-                            wr = simulate_conquest_bo5(my_rem, list(opp_combo), win_rates, iterations=2000)
-                            expected_wr += (wr * prob)
-                            
-                        expected_wr = expected_wr / total_prob if total_prob > 0 else expected_wr
+                        expected_wr_for_my_ban = 0
+                        total_prob_for_my_ban = 0
                         
-                        if expected_wr < worst_case_wr:
-                            worst_case_wr = expected_wr
+                        for opp_ban_c in opp_classes:
+                            rem_classes = [c for c in opp_classes if c != opp_ban_c]
+                            opp_combos_filtered = list(itertools.product(*[class_map[c] for c in rem_classes]))
                             
-                            leads = {}
-                            for md in my_rem:
-                                ev_lead = 0
-                                lead_prob = 0
-                                for od in list(itertools.chain(*[class_map[c] for c in rem_classes])):
-                                    p = get_archetype_prob(od, arch_weights)
-                                    ev_lead += win_rates.get(md, {}).get(od, 0.5) * p
-                                    lead_prob += p
-                                leads[md] = ev_lead / lead_prob if lead_prob > 0 else ev_lead
-                            best_lead_for_this_ban = max(leads, key=leads.get)
-
-                    results.append({"ban": ban_c, "wr": worst_case_wr, "lead": best_lead_for_this_ban})
+                            expected_wr = 0
+                            total_prob = 0
+                            
+                            for opp_combo in opp_combos_filtered:
+                                prob = 1.0
+                                for d in opp_combo: prob *= get_archetype_prob(d, arch_weights)
+                                total_prob += prob
+                                
+                                wr = simulate_conquest_bo5(my_rem, list(opp_combo), win_rates, iterations=1500)
+                                expected_wr += (wr * prob)
+                                
+                            ev_for_this_ban_pair = expected_wr / total_prob if total_prob > 0 else expected_wr
+                            # Store for DataFrame (Columns = Opp Ban, Rows = My Ban)
+                            ban_matrix_data[my_ban][f"Opp Bans {opp_ban_c}"] = round(ev_for_this_ban_pair, 2)
+                            
+                            # Heuristic for my worst-case scenario (Assuming opp bans perfectly against me)
+                            if ev_for_this_ban_pair < worst_case_wr_overall:
+                                worst_case_wr_overall = ev_for_this_ban_pair
+                                best_my_ban_overall = my_ban
+                                
+                                # Generate the Game Theory Lead matrix for this optimal ban
+                                optimal_leads_payoff = {md: {oc: 0 for oc in rem_classes} for md in my_rem}
+                                for md in my_rem:
+                                    for oc in rem_classes:
+                                        ev_lead = 0
+                                        lead_prob = 0
+                                        for od in class_map[oc]:
+                                            p = get_archetype_prob(od, arch_weights)
+                                            ev_lead += win_rates.get(md, {}).get(od, 0.5) * p
+                                            lead_prob += p
+                                        optimal_leads_payoff[md][oc] = ev_lead / lead_prob if lead_prob > 0 else ev_lead
                 
-                best_option = max(results, key=lambda x: x['wr'])
-                st.success(f"### 🛑 Optimal Ban: {best_option['ban']}")
-                st.metric("Expected Series Win Rate", f"{best_option['wr']:.1f}%")
-                st.info(f"👉 **Game 1 Lead:** {best_option['lead']}")
+                st.success(f"### 🛑 Mathematically Optimal Ban: {best_my_ban_overall}")
+                
+                # --- NEW FEATURE 1: NASH EQUILIBRIUM MIXED QUEUE ---
+                nash_strategy = get_nash_equilibrium(optimal_leads_payoff)
+                
+                st.info("### 🎲 Game 1 Nash Equilibrium (Unexploitable Lead)")
+                st.write("To prevent your opponent from predicting your lead, roll a die or use a random number generator and queue your decks according to these exact probabilities:")
+                for deck, pct in sorted(nash_strategy.items(), key=lambda x: x[1], reverse=True):
+                    st.write(f"- **{deck}:** {pct:.1f}%")
+                
+                st.write("---")
+                
+                # --- NEW FEATURE 2: THE BAN HEAT MAP MATRIX ---
+                st.subheader("🗺️ The Complete Ban Matrix")
+                st.write("Rows are **Your Bans**, Columns are **Their Bans**. The numbers are your Expected Series Win Rate.")
+                
+                df_matrix = pd.DataFrame(ban_matrix_data).T
+                # Apply a red-yellow-green background gradient. High numbers = Green.
+                styled_df = df_matrix.style.background_gradient(cmap='RdYlGn', axis=None, vmin=df_matrix.values.min(), vmax=df_matrix.values.max())
+                st.dataframe(styled_df, use_container_width=True)
+                st.caption("If the Optimal Ban forces you to play against a deck you hate, look at the grid above to find a slightly mathematically inferior ban that gives you a better comfort matchup.")
 
     # --- PHASE 4: FOG OF WAR TRACKER ---
     elif phase == "Phase 4: Fog of War Tracker":
@@ -373,9 +445,11 @@ if matchup_file:
                         st.rerun()
 
                 st.write("---")
-                best_lead, best_floor = None, -1
+                
+                # --- NEW FEATURE: LIVE NASH EQUILIBRIUM FOR NEXT GAME ---
+                live_payoff_matrix = {md: {oc: 0 for oc in st.session_state.opp_status.keys()} for md in st.session_state.my_rem}
+                
                 for my_deck in st.session_state.my_rem:
-                    worst_mu = 101
                     for opp_c, opp_d in st.session_state.opp_status.items():
                         if opp_d == "Off Meta":
                             c_decks = class_map[opp_c]
@@ -393,14 +467,16 @@ if matchup_file:
                                 p_total += p
                             mu = ev / p_total if p_total > 0 else ev
                             
-                        if mu < worst_mu: worst_mu = mu
+                        live_payoff_matrix[my_deck][opp_c] = mu
                         
-                    if worst_mu > best_floor:
-                        best_floor = worst_mu
-                        best_lead = my_deck
-                        
-                st.info(f"👉 **Recommended Next Pick:** {best_lead} (Weighted Floor: {best_floor*100:.1f}%)")
+                live_nash_strategy = get_nash_equilibrium(live_payoff_matrix)
+                
+                st.info("### 🎲 Optimal Next-Game Queue (Nash Equilibrium)")
+                st.write("To remain mathematically unexploitable this round, queue your decks using these exact probabilities:")
+                for deck, pct in sorted(live_nash_strategy.items(), key=lambda x: x[1], reverse=True):
+                    st.write(f"- **{deck}:** {pct:.1f}%")
 
+                st.write("---")
                 st.write("### ⚔️ Resolve Game")
                 
                 r_col1, r_col2 = st.columns(2)
@@ -427,10 +503,8 @@ if matchup_file:
                             del st.session_state.opp_status[opp_played_c]
                             st.rerun()
                             
-            # The Match History is now OUTSIDE the win/loss conditional loop!
             if st.session_state.get('history'):
                 st.write("---")
-                # Title dynamically changes if the match is officially over
                 if not st.session_state.my_rem or not st.session_state.opp_status:
                     st.write("### 📜 Final Match Summary")
                 else:
