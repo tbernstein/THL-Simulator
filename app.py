@@ -8,7 +8,7 @@ import io
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V23", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V24", layout="wide")
 
 # --- CORE MATH & NASH SOLVERS ---
 def solve_zero_sum(matrix, iterations=2500):
@@ -390,43 +390,73 @@ if file_matchups and file_deck_freq and file_class_freq:
         if 't_active' not in st.session_state:
             st.session_state.t_active = False
             st.session_state.t_my_rem = []
-            st.session_state.t_opp_rem = []
+            st.session_state.t_opp_status = {}  # Class -> Archetype (or "Unknown")
+            st.session_state.t_history = []
 
         if not st.session_state.t_active:
-            st.write("Select the **3 active decks** (post-ban) for each player to begin tracking.")
+            st.write("Select your **3 specific active decks** and the opponent's **3 known classes** (post-ban) to begin.")
             c1, c2 = st.columns(2)
             with c1:
                 start_my = st.multiselect("My 3 Active Decks", archetypes, max_selections=3)
             with c2:
-                start_opp = st.multiselect("Opponent's 3 Active Decks", archetypes, max_selections=3)
+                start_opp_classes = st.multiselect("Opponent's 3 Active Classes", all_classes, max_selections=3)
                 
             if st.button("Start Live Match", type="primary"):
-                if len(start_my) > 0 and len(start_opp) > 0:
+                if len(start_my) == 3 and len(start_opp_classes) == 3:
                     st.session_state.t_active = True
                     st.session_state.t_my_rem = list(start_my)
-                    st.session_state.t_opp_rem = list(start_opp)
+                    # Initialize opponent classes as Unknown archetypes
+                    st.session_state.t_opp_status = {c: "Unknown" for c in start_opp_classes}
+                    st.session_state.t_history = []
                     st.rerun()
                 else:
-                    st.error("Select at least 1 deck for both players.")
+                    st.error("Select exactly 3 decks for yourself and 3 classes for the opponent.")
                     
         else:
-            # Active Match UI
+            # Active Match UI - Check Win Conditions
             if not st.session_state.t_my_rem:
                 st.success("🎉 **MATCH OVER! YOU WON!**")
                 if st.button("Reset Tracker"):
                     st.session_state.t_active = False
                     st.rerun()
-            elif not st.session_state.t_opp_rem:
+            elif not st.session_state.t_opp_status:
                 st.error("💀 **MATCH OVER! OPPONENT WON!**")
                 if st.button("Reset Tracker"):
                     st.session_state.t_active = False
                     st.rerun()
             else:
-                # Calculate Nash for Queueing
-                memo = {}
-                val, my_p, opp_p = get_nash_queue(st.session_state.t_my_rem, st.session_state.t_opp_rem, win_rates, memo)
+                # 1. REVEAL OPPONENT DECKS SECTION
+                st.write("### 🔍 Opponent Lineup Status")
+                st.write("Use the dropdowns to lock in the opponent's specific archetypes as they play them.")
                 
-                st.write(f"### Current BO5 Win Probability: {val * 100:.1f}%")
+                opp_cols = st.columns(len(st.session_state.t_opp_status))
+                for i, (c, status) in enumerate(st.session_state.t_opp_status.items()):
+                    with opp_cols[i]:
+                        if status == "Unknown":
+                            options = ["Unknown"] + class_map[c]
+                            revealed = st.selectbox(f"{c} Archetype:", options, key=f"rev_{c}")
+                            if revealed != "Unknown":
+                                st.session_state.t_opp_status[c] = revealed
+                                st.rerun()
+                        else:
+                            st.success(f"**{c}**\n{status}")
+                            
+                st.write("---")
+
+                # 2. CALCULATE NASH QUEUE
+                # Build the assumed opponent lineup for math (uses highest frequency if Unknown)
+                assumed_opp_rem = []
+                for c, status in st.session_state.t_opp_status.items():
+                    if status == "Unknown":
+                        best_guess = max(class_map[c], key=lambda d: arch_weights.get(d, 1.0))
+                        assumed_opp_rem.append(best_guess)
+                    else:
+                        assumed_opp_rem.append(status)
+                        
+                memo = {}
+                val, my_p, opp_p = get_nash_queue(st.session_state.t_my_rem, assumed_opp_rem, win_rates, memo)
+                
+                st.write(f"### 🎯 Current BO5 Win Probability: {val * 100:.1f}%")
                 
                 # Format Nash Recommendations
                 recommendations = [(st.session_state.t_my_rem[i], my_p[i]) for i in range(len(my_p))]
@@ -435,25 +465,43 @@ if file_matchups and file_deck_freq and file_class_freq:
                 st.info(f"💡 **NASH RECOMMENDATION: Queue {recommendations[0][0]}** ({recommendations[0][1]*100:.1f}% mix frequency)")
                 
                 if len(recommendations) > 1:
-                    st.write("Alternative mixed strategies:")
-                    for deck, prob in recommendations[1:]:
-                        if prob > 0.01:
-                            st.write(f"- {deck}: {prob*100:.1f}%")
+                    with st.expander("View full mixed strategy math"):
+                        st.write("If you want to roll a die, use these exact probabilities:")
+                        for deck, prob in recommendations:
+                            if prob > 0.01:
+                                st.write(f"- {deck}: {prob*100:.1f}%")
 
                 st.write("---")
-                st.write("#### Record Game Result")
+                
+                # 3. RECORD GAME RESULT
+                st.write("### 📝 Record Game Result")
                 rc1, rc2 = st.columns(2)
                 with rc1:
                     played_my = st.selectbox("I played:", st.session_state.t_my_rem)
                     if st.button("🟢 I Won (Remove my deck)"):
                         st.session_state.t_my_rem.remove(played_my)
+                        st.session_state.t_history.append(f"🟢 **WIN:** {played_my} won")
                         st.rerun()
                 with rc2:
-                    played_opp = st.selectbox("Opponent played:", st.session_state.t_opp_rem)
-                    if st.button("🔴 Opponent Won (Remove their deck)"):
-                        st.session_state.t_opp_rem.remove(played_opp)
-                        st.rerun()
+                    opp_classes_rem = list(st.session_state.t_opp_status.keys())
+                    played_opp_c = st.selectbox("Opponent played class:", opp_classes_rem)
+                    
+                    if st.session_state.t_opp_status[played_opp_c] == "Unknown":
+                        st.warning("⚠️ Reveal their specific archetype above before logging their win.")
+                    else:
+                        if st.button("🔴 Opponent Won (Remove their deck)"):
+                            played_arch = st.session_state.t_opp_status[played_opp_c]
+                            del st.session_state.t_opp_status[played_opp_c]
+                            st.session_state.t_history.append(f"🔴 **LOSS:** {played_my} lost to {played_arch}")
+                            st.rerun()
                 
+                # Render Match History
+                if st.session_state.t_history:
+                    st.write("---")
+                    st.write("#### 📜 Match History")
+                    for i, log in enumerate(st.session_state.t_history):
+                        st.write(f"**Game {i+1}:** {log}")
+
                 st.write("---")
                 if st.button("Abort / Reset Match", type="secondary"):
                     st.session_state.t_active = False
