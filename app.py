@@ -86,17 +86,17 @@ def apply_mastery_adjustments(win_rates, df_mastery):
 st.sidebar.header("📁 Step 1: Upload Data")
 
 st.sidebar.markdown("""
-**1. Matchup Table** *The raw win-rate matrix (e.g., from HSReplay). Rows are your decks, columns are opponents.*
+**1. Matchup Table** *The raw win-rate matrix. Optimized for download from vS Gold. Rows are your decks, columns are opponents.*
 """)
 file_matchups = st.sidebar.file_uploader("Upload Matchup Table", type=['csv'], key="m_up")
 
 st.sidebar.markdown("""
-**2. Deck Frequency** *Contains the popularity of specific deck archetypes at your rank.*
+**2. Deck Frequency** *Contains the popularity of specific deck archetypes. Optimized for download from vS Gold.*
 """)
 file_deck_freq = st.sidebar.file_uploader("Upload Deck Frequency", type=['csv'], key="d_freq")
 
 st.sidebar.markdown("""
-**3. Class Frequency** *Contains the overall popularity of each class at your rank.*
+**3. Class Frequency** *Contains the overall popularity of each class. Optimized for download from vS Gold.*
 """)
 file_class_freq = st.sidebar.file_uploader("Upload Class Frequency", type=['csv'], key="c_freq")
 
