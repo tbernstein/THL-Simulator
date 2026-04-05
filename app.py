@@ -392,6 +392,8 @@ if file_matchups and file_deck_freq and file_class_freq:
             st.session_state.t_my_rem = []
             st.session_state.t_opp_status = {}  # Class -> Archetype (or "Unknown")
             st.session_state.t_history = []
+            if 't_nash_roll' in st.session_state:
+                del st.session_state['t_nash_roll']
 
         if not st.session_state.t_active:
             st.write("Select your **3 specific active decks** and the opponent's **3 known classes** (post-ban) to begin.")
@@ -408,6 +410,8 @@ if file_matchups and file_deck_freq and file_class_freq:
                     # Initialize opponent classes as Unknown archetypes
                     st.session_state.t_opp_status = {c: "Unknown" for c in start_opp_classes}
                     st.session_state.t_history = []
+                    if 't_nash_roll' in st.session_state:
+                        del st.session_state['t_nash_roll']
                     st.rerun()
                 else:
                     st.error("Select exactly 3 decks for yourself and 3 classes for the opponent.")
@@ -433,13 +437,18 @@ if file_matchups and file_deck_freq and file_class_freq:
                 for i, (c, status) in enumerate(st.session_state.t_opp_status.items()):
                     with opp_cols[i]:
                         if status == "Unknown":
-                            options = ["Unknown"] + class_map[c]
+                            options = ["Unknown", f"Off-Meta {c}"] + class_map[c]
                             revealed = st.selectbox(f"{c} Archetype:", options, key=f"rev_{c}")
                             if revealed != "Unknown":
                                 st.session_state.t_opp_status[c] = revealed
+                                if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
                                 st.rerun()
                         else:
                             st.success(f"**{c}**\n{status}")
+                            if st.button("Undo", key=f"undo_{c}"):
+                                st.session_state.t_opp_status[c] = "Unknown"
+                                if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
+                                st.rerun()
                             
                 st.write("---")
 
@@ -471,6 +480,17 @@ if file_matchups and file_deck_freq and file_class_freq:
                             if prob > 0.01:
                                 st.write(f"- {deck}: {prob*100:.1f}%")
 
+                if st.button("🎲 Roll the Die (Nash Pick)"):
+                    decks = [r[0] for r in recommendations]
+                    weights = [r[1] for r in recommendations]
+                    if sum(weights) > 0:
+                        st.session_state.t_nash_roll = random.choices(decks, weights=weights, k=1)[0]
+                    else:
+                        st.session_state.t_nash_roll = decks[0]
+                        
+                if st.session_state.get('t_nash_roll'):
+                    st.success(f"🎲 **The Nash Die has spoken! You should queue:** {st.session_state.t_nash_roll}")
+
                 st.write("---")
                 
                 # 3. RECORD GAME RESULT
@@ -481,6 +501,7 @@ if file_matchups and file_deck_freq and file_class_freq:
                     if st.button("🟢 I Won (Remove my deck)"):
                         st.session_state.t_my_rem.remove(played_my)
                         st.session_state.t_history.append(f"🟢 **WIN:** {played_my} won")
+                        if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
                         st.rerun()
                 with rc2:
                     opp_classes_rem = list(st.session_state.t_opp_status.keys())
@@ -493,6 +514,7 @@ if file_matchups and file_deck_freq and file_class_freq:
                             played_arch = st.session_state.t_opp_status[played_opp_c]
                             del st.session_state.t_opp_status[played_opp_c]
                             st.session_state.t_history.append(f"🔴 **LOSS:** {played_my} lost to {played_arch}")
+                            if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
                             st.rerun()
                 
                 # Render Match History
