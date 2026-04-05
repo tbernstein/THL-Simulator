@@ -420,14 +420,8 @@ if file_matchups and file_deck_freq and file_class_freq:
             # Active Match UI - Check Win Conditions
             if not st.session_state.t_my_rem:
                 st.success("🎉 **MATCH OVER! YOU WON!**")
-                if st.button("Reset Tracker"):
-                    st.session_state.t_active = False
-                    st.rerun()
             elif not st.session_state.t_opp_status:
                 st.error("💀 **MATCH OVER! OPPONENT WON!**")
-                if st.button("Reset Tracker"):
-                    st.session_state.t_active = False
-                    st.rerun()
             else:
                 # 1. REVEAL OPPONENT DECKS SECTION
                 st.write("### 🔍 Opponent Lineup Status")
@@ -516,18 +510,31 @@ if file_matchups and file_deck_freq and file_class_freq:
                             st.session_state.t_history.append(f"🔴 **LOSS:** {played_my} lost to {played_arch}")
                             if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
                             st.rerun()
-                
-                # Render Match History
-                if st.session_state.t_history:
-                    st.write("---")
-                    st.write("#### 📜 Match History")
-                    for i, log in enumerate(st.session_state.t_history):
-                        st.write(f"**Game {i+1}:** {log}")
-
+            
+            # Render Match History (Outdented so it persists after the match ends)
+            if st.session_state.t_history:
                 st.write("---")
-                if st.button("Abort / Reset Match", type="secondary"):
-                    st.session_state.t_active = False
-                    st.rerun()
+                st.write("#### 📜 Match History")
+                for i, log in enumerate(st.session_state.t_history):
+                    st.write(f"**Game {i+1}:** {log}")
+                    
+                # If the match is over, provide a clean copy-paste box
+                if not st.session_state.t_my_rem or not st.session_state.t_opp_status:
+                    st.write("### 📋 Export Match Log")
+                    clean_logs = []
+                    for i, log in enumerate(st.session_state.t_history):
+                        # Strip markdown formatting for clean plain-text copy
+                        clean_txt = log.replace("🟢 **WIN:** ", "WIN: ").replace("🔴 **LOSS:** ", "LOSS: ")
+                        clean_logs.append(f"Game {i+1}: {clean_txt}")
+                    
+                    # Uses Streamlit's code block which has a native copy-to-clipboard button
+                    st.code("\n".join(clean_logs), language="text")
+
+            st.write("---")
+            btn_text = "End / Reset Match" if (not st.session_state.t_my_rem or not st.session_state.t_opp_status) else "Abort / Reset Match"
+            if st.button(btn_text, type="secondary"):
+                st.session_state.t_active = False
+                st.rerun()
 
 else:
     st.info("👈 Please upload the required CSV files in the sidebar to begin.")
