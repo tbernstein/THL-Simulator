@@ -8,7 +8,7 @@ import io
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V21", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V23", layout="wide")
 
 # --- CORE MATH & NASH SOLVERS ---
 def solve_zero_sum(matrix, iterations=2500):
@@ -251,7 +251,7 @@ if file_matchups and file_deck_freq and file_class_freq:
     # === TAB 1: PHASE 1 ===
     with tab1:
         st.header("Phase 1: Broad Class Lineup Optimizer")
-        st.write("Generates the best 4-class lineups against the general ladder meta using fast Monte Carlo simulation.")
+        st.write("Generates the best 4-class lineups against the general ladder meta. Incorporates 'optionality value' by dynamically picking the best archetype per class based on the opponent's simulated lineup.")
         
         if mastery_logs:
             with st.expander("🛠️ Mastery Adjustments Applied", expanded=True):
@@ -273,14 +273,18 @@ if file_matchups and file_deck_freq and file_class_freq:
                 all_results = []
                 
                 for my_class_combo in class_combos:
-                    my_best_decks = [max(class_map[c], key=lambda d: arch_weights.get(d, 1.0)) for c in my_class_combo]
                     matchup_wrs = []
                     for opp_decks in meta_field:
-                        wr = simulate_conquest_bo5(list(my_best_decks), list(opp_decks), win_rates, iterations=100)
+                        my_dynamic_decks = []
+                        for c in my_class_combo:
+                            best_arch = max(class_map[c], key=lambda d: sum(win_rates.get(d, {}).get(od, 0.5) for od in opp_decks))
+                            my_dynamic_decks.append(best_arch)
+                            
+                        wr = simulate_conquest_bo5(list(my_dynamic_decks), list(opp_decks), win_rates, iterations=100)
                         matchup_wrs.append(wr)
                         
                     all_results.append({
-                        "Lineup": ", ".join(my_best_decks),
+                        "Class Lineup": ", ".join(my_class_combo),
                         "Expected WR": statistics.mean(matchup_wrs),
                         "Floor": min(matchup_wrs),
                         "Favored %": sum(1 for w in matchup_wrs if w > 50.0) / len(matchup_wrs) * 100
@@ -288,7 +292,7 @@ if file_matchups and file_deck_freq and file_class_freq:
 
                 all_results = sorted(all_results, key=lambda x: x["Expected WR"], reverse=True)
                 
-                st.subheader("🔥 Top 10 Lineups")
+                st.subheader("🔥 Top 10 Class Lineups")
                 df_results = pd.DataFrame(all_results[:10])
                 df_results.index = df_results.index + 1
                 st.dataframe(df_results.style.format({
@@ -299,7 +303,7 @@ if file_matchups and file_deck_freq and file_class_freq:
     # === TAB 2: PHASE 2 ===
     with tab2:
         st.header("Phase 2: Archetype & Ban Optimizer")
-        st.write("Calculates EXACT Nash Equilibrium BO5 win rates to find your perfect archetypes and bans for a known opponent.")
+        st.write("Calculates EXACT Nash Equilibrium BO5 win rates. We recommend the optimal archetypes by default, but you can override them to explore different ban matrices.")
         
         col1, col2 = st.columns(2)
         with col1:
@@ -308,44 +312,76 @@ if file_matchups and file_deck_freq and file_class_freq:
             opp_classes = st.multiselect("Select Opponent's 4 Classes", all_classes, max_selections=4)
 
         if len(my_classes) == 4 and len(opp_classes) == 4:
-            if st.button("Optimize Archetypes & Bans", type="primary", key="btn_phase2"):
-                with st.spinner("Calculating absolute optimal lineup and bans..."):
-                    # Guess Opponent's Decks (highest frequency archetype per class)
-                    opp_4 = [max(class_map[c], key=lambda d: arch_weights.get(d, 1.0)) for c in opp_classes]
-                    
-                    # Generate all possible archetype combos for user
+            opp_4 = [max(class_map[c], key=lambda d: arch_weights.get(d, 1.0)) for c in opp_classes]
+
+            # Cache the optimal combo calculation so the UI doesn't stutter, and to provide solid defaults
+            cache_key = tuple(sorted(my_classes)) + tuple(sorted(opp_4))
+            if st.session_state.get('phase2_cache_key') != cache_key:
+                with st.spinner("Finding optimal archetypes..."):
                     my_options = [class_map[c] for c in my_classes]
                     all_my_combos = list(itertools.product(*my_options))
-                    
                     best_combo = None
                     best_wr = -1
-                    best_my_ban = None
-                    best_opp_ban = None
-                    
-                    nash_memo = {} # Global cache speeds up 4x4 matrix solving significantly
-                    
+                    nash_memo = {}
                     for combo in all_my_combos:
                         ban_matrix = get_ban_matrix(list(combo), opp_4, win_rates, nash_memo)
                         my_ban_p, opp_ban_p, match_wr = solve_zero_sum(ban_matrix)
-                        
                         if match_wr > best_wr:
                             best_wr = match_wr
                             best_combo = list(combo)
-                            # my_ban_p corresponds to opp_4 (what I ban)
-                            best_my_ban = opp_4[my_ban_p.index(max(my_ban_p))]
-                            # opp_ban_p corresponds to my_4 (what they ban)
-                            best_opp_ban = best_combo[opp_ban_p.index(max(opp_ban_p))]
-                    
-                    st.success(f"### Expected Match Win Rate: {best_wr * 100:.2f}%")
-                    
-                    res_col1, res_col2 = st.columns(2)
-                    with res_col1:
-                        st.info(f"**Your Best Archetypes:**\n" + "\n".join([f"- {d}" for d in best_combo]))
-                        st.error(f"🛑 **YOU SHOULD BAN:** {best_my_ban}")
-                    with res_col2:
-                        st.info(f"**Expected Opponent Decks:**\n" + "\n".join([f"- {d}" for d in opp_4]))
-                        st.warning(f"🛑 **EXPECT THEM TO BAN:** {best_opp_ban}")
+                    st.session_state['phase2_best_combo'] = best_combo
+                    st.session_state['phase2_cache_key'] = cache_key
 
+            best_combo = st.session_state['phase2_best_combo']
+
+            st.write("---")
+            st.subheader("🛠️ Custom Lineup Editor")
+            st.write("The dropdowns below are pre-loaded with the **mathematically optimal archetypes**. Change them to see how the matrix shifts.")
+
+            sel_cols = st.columns(4)
+            selected_my_4 = []
+            
+            for i, c in enumerate(my_classes):
+                options = class_map[c]
+                default_deck = best_combo[i]
+                # Fallback to index 0 if something goes wrong, otherwise use the optimal deck
+                default_idx = options.index(default_deck) if default_deck in options else 0
+                
+                with sel_cols[i]:
+                    chosen_deck = st.selectbox(f"Your {c}", options, index=default_idx)
+                    selected_my_4.append(chosen_deck)
+
+            st.write("---")
+            st.subheader("Expected Opponent Lineup")
+            st.info(" , ".join(opp_4))
+
+            # Reactively calculate matrix based on the user's actively selected decks
+            nash_memo = {}
+            ban_matrix = get_ban_matrix(selected_my_4, opp_4, win_rates, nash_memo)
+            my_ban_p, opp_ban_p, match_wr = solve_zero_sum(ban_matrix)
+            
+            best_my_ban = opp_4[my_ban_p.index(max(my_ban_p))]
+            best_opp_ban = selected_my_4[opp_ban_p.index(max(opp_ban_p))]
+
+            st.success(f"### Expected Match Win Rate: {match_wr * 100:.2f}%")
+            
+            res_col1, res_col2 = st.columns(2)
+            with res_col1:
+                st.error(f"🛑 **YOU SHOULD BAN:** {best_my_ban}")
+            with res_col2:
+                st.warning(f"🛑 **EXPECT THEM TO BAN:** {best_opp_ban}")
+
+            st.write("---")
+            st.write("### 🧮 4x4 Ban Matrix (BO5 Expected Win Rates)")
+            st.write("*Rows are the deck YOU ban. Columns are the deck THEY ban. The cell value is YOUR expected win rate.*")
+            
+            df_ban = pd.DataFrame(
+                ban_matrix, 
+                index=[f"Ban {d}" for d in opp_4], 
+                columns=[f"Ban {d}" for d in selected_my_4]
+            )
+            
+            st.dataframe(df_ban.style.format("{:.2%}").background_gradient(cmap='RdYlGn', axis=None), use_container_width=True)
 
     # === TAB 3: PHASE 3 ===
     with tab3:
