@@ -8,7 +8,7 @@ import io
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V24", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V27", layout="wide")
 
 # --- CORE MATH & NASH SOLVERS ---
 def solve_zero_sum(matrix, iterations=2500):
@@ -128,26 +128,31 @@ def apply_mastery_adjustments(win_rates, df_mastery):
     if df_mastery is None or df_mastery.empty:
         return win_rates, []
 
-    skill_bases = {1: 0.04, 2: 0.0, 3: -0.06}
-    comp_mults = {1: 1.5, 2: 1.0, 3: 0.5}
+    # Nohands Gamer 4-Tier Scale Modifiers
+    tier_modifiers = {
+        'S': 0.045,  # 250+ games: Max edge
+        'A': 0.015,  # 100-250 games: Solid edge
+        'B': -0.035, # 50-100 games: Below vS baseline
+        'C': -0.10   # <50 games: Severe penalty (Do not bring)
+    }
+    
     adjustment_logs = []
 
     for index, row in df_mastery.iterrows():
-        deck_name = str(row.iloc[0]).strip()
         try:
-            skill = int(row.iloc[1])
-            complexity = int(row.iloc[2])
-        except (ValueError, TypeError):
+            deck_name = str(row.iloc[0]).strip()
+            tier = str(row.iloc[1]).strip().upper()
+        except (ValueError, TypeError, IndexError):
             continue
 
-        if skill in skill_bases and complexity in comp_mults:
-            modifier = skill_bases[skill] * comp_mults[complexity]
+        if tier in tier_modifiers:
+            modifier = tier_modifiers[tier]
             if deck_name in win_rates:
                 for opp_deck in win_rates[deck_name]:
                     new_wr = win_rates[deck_name][opp_deck] + modifier
                     win_rates[deck_name][opp_deck] = max(0.05, min(0.95, new_wr))
                 if modifier != 0:
-                    adjustment_logs.append(f"**{deck_name}**: Adjusted overall expected WR by {modifier*100:+.1f}%")
+                    adjustment_logs.append(f"**{deck_name}** (Tier {tier}): Adjusted expected WR by {modifier*100:+.1f}%")
                     
     return win_rates, adjustment_logs
 
@@ -163,8 +168,15 @@ file_deck_freq = st.sidebar.file_uploader("Upload Deck Frequency", type=['csv'],
 st.sidebar.markdown("**3. Class Frequency** *Contains the overall popularity of each class from vS Gold.*")
 file_class_freq = st.sidebar.file_uploader("Upload Class Frequency", type=['csv'], key="c_freq")
 
-st.sidebar.markdown("**4. Mastery Data** *Format: 3 columns (`Deck Name`, `Skill` 1-3 [1=Best], `Complexity` 1-3 [1=Hardest]).*")
-file_mastery = st.sidebar.file_uploader("Upload Mastery CSV (Optional)", type=['csv'], key="mastery")
+st.sidebar.markdown("""
+**4. Mastery Data (Optional)** *Adjusts win rates based on the Nohands Gamer mastery scale.*
+**Format:** 2 columns (`Deck Name`, `Tier`)
+* **S:** 250+ games (+4.5% WR)
+* **A:** 100-250 games (+1.5% WR)
+* **B:** 50-100 games (-3.5% WR)
+* **C:** <50 games (-10.0% WR)
+""")
+file_mastery = st.sidebar.file_uploader("Upload Mastery CSV", type=['csv'], key="mastery")
 
 # --- DATA PROCESSING ---
 if file_matchups and file_deck_freq and file_class_freq:
@@ -252,6 +264,7 @@ if file_matchups and file_deck_freq and file_class_freq:
     with tab1:
         st.header("Phase 1: Broad Class Lineup Optimizer")
         st.write("Generates the best 4-class lineups against the general ladder meta. Incorporates 'optionality value' by dynamically picking the best archetype per class based on the opponent's simulated lineup.")
+        st.write("**Cohesion Score:** Shows how many of your decks directly benefit from banning the 'Target Ban' class (win rate < 50% vs that class). A score of 3/4 or 4/4 means strong Ban Synergy.")
         
         if mastery_logs:
             with st.expander("🛠️ Mastery Adjustments Applied", expanded=True):
@@ -283,11 +296,30 @@ if file_matchups and file_deck_freq and file_class_freq:
                         wr = simulate_conquest_bo5(list(my_dynamic_decks), list(opp_decks), win_rates, iterations=100)
                         matchup_wrs.append(wr)
                         
+                    # --- Calculate Cohesion & Target Ban ---
+                    baseline_my_decks = [max(class_map[c], key=lambda d: arch_weights.get(d, 1.0)) for c in my_class_combo]
+                    
+                    lowest_avg_wr = 1.0
+                    target_ban_class = None
+                    cohesion_score = 0
+                    
+                    for opp_c in all_classes:
+                        opp_baseline_deck = max(class_map[opp_c], key=lambda d: arch_weights.get(d, 1.0))
+                        
+                        wrs_against_target = [win_rates.get(my_d, {}).get(opp_baseline_deck, 0.5) for my_d in baseline_my_decks]
+                        avg_wr = sum(wrs_against_target) / 4.0
+                        
+                        if avg_wr < lowest_avg_wr:
+                            lowest_avg_wr = avg_wr
+                            target_ban_class = opp_c
+                            cohesion_score = sum(1 for w in wrs_against_target if w < 0.5)
+
                     all_results.append({
                         "Class Lineup": ", ".join(my_class_combo),
                         "Expected WR": statistics.mean(matchup_wrs),
                         "Floor": min(matchup_wrs),
-                        "Favored %": sum(1 for w in matchup_wrs if w > 50.0) / len(matchup_wrs) * 100
+                        "Target Ban": target_ban_class,
+                        "Cohesion": f"{cohesion_score}/4 Protected"
                     })
 
                 all_results = sorted(all_results, key=lambda x: x["Expected WR"], reverse=True)
@@ -295,8 +327,10 @@ if file_matchups and file_deck_freq and file_class_freq:
                 st.subheader("🔥 Top 10 Class Lineups")
                 df_results = pd.DataFrame(all_results[:10])
                 df_results.index = df_results.index + 1
+                
                 st.dataframe(df_results.style.format({
-                    "Expected WR": "{:.2f}%", "Floor": "{:.2f}%", "Favored %": "{:.1f}%"
+                    "Expected WR": "{:.2f}%", 
+                    "Floor": "{:.2f}%"
                 }), use_container_width=True)
 
 
@@ -314,7 +348,6 @@ if file_matchups and file_deck_freq and file_class_freq:
         if len(my_classes) == 4 and len(opp_classes) == 4:
             opp_4 = [max(class_map[c], key=lambda d: arch_weights.get(d, 1.0)) for c in opp_classes]
 
-            # Cache the optimal combo calculation so the UI doesn't stutter, and to provide solid defaults
             cache_key = tuple(sorted(my_classes)) + tuple(sorted(opp_4))
             if st.session_state.get('phase2_cache_key') != cache_key:
                 with st.spinner("Finding optimal archetypes..."):
@@ -344,7 +377,6 @@ if file_matchups and file_deck_freq and file_class_freq:
             for i, c in enumerate(my_classes):
                 options = class_map[c]
                 default_deck = best_combo[i]
-                # Fallback to index 0 if something goes wrong, otherwise use the optimal deck
                 default_idx = options.index(default_deck) if default_deck in options else 0
                 
                 with sel_cols[i]:
@@ -355,7 +387,6 @@ if file_matchups and file_deck_freq and file_class_freq:
             st.subheader("Expected Opponent Lineup")
             st.info(" , ".join(opp_4))
 
-            # Reactively calculate matrix based on the user's actively selected decks
             nash_memo = {}
             ban_matrix = get_ban_matrix(selected_my_4, opp_4, win_rates, nash_memo)
             my_ban_p, opp_ban_p, match_wr = solve_zero_sum(ban_matrix)
@@ -390,7 +421,7 @@ if file_matchups and file_deck_freq and file_class_freq:
         if 't_active' not in st.session_state:
             st.session_state.t_active = False
             st.session_state.t_my_rem = []
-            st.session_state.t_opp_status = {}  # Class -> Archetype (or "Unknown")
+            st.session_state.t_opp_status = {}
             st.session_state.t_history = []
             if 't_nash_roll' in st.session_state:
                 del st.session_state['t_nash_roll']
@@ -407,7 +438,6 @@ if file_matchups and file_deck_freq and file_class_freq:
                 if len(start_my) == 3 and len(start_opp_classes) == 3:
                     st.session_state.t_active = True
                     st.session_state.t_my_rem = list(start_my)
-                    # Initialize opponent classes as Unknown archetypes
                     st.session_state.t_opp_status = {c: "Unknown" for c in start_opp_classes}
                     st.session_state.t_history = []
                     if 't_nash_roll' in st.session_state:
@@ -417,13 +447,11 @@ if file_matchups and file_deck_freq and file_class_freq:
                     st.error("Select exactly 3 decks for yourself and 3 classes for the opponent.")
                     
         else:
-            # Active Match UI - Check Win Conditions
             if not st.session_state.t_my_rem:
                 st.success("🎉 **MATCH OVER! YOU WON!**")
             elif not st.session_state.t_opp_status:
                 st.error("💀 **MATCH OVER! OPPONENT WON!**")
             else:
-                # 1. REVEAL OPPONENT DECKS SECTION
                 st.write("### 🔍 Opponent Lineup Status")
                 st.write("Use the dropdowns to lock in the opponent's specific archetypes as they play them.")
                 
@@ -446,8 +474,6 @@ if file_matchups and file_deck_freq and file_class_freq:
                             
                 st.write("---")
 
-                # 2. CALCULATE NASH QUEUE
-                # Build the assumed opponent lineup for math (uses highest frequency if Unknown)
                 assumed_opp_rem = []
                 for c, status in st.session_state.t_opp_status.items():
                     if status == "Unknown":
@@ -461,7 +487,6 @@ if file_matchups and file_deck_freq and file_class_freq:
                 
                 st.write(f"### 🎯 Current BO5 Win Probability: {val * 100:.1f}%")
                 
-                # Format Nash Recommendations
                 recommendations = [(st.session_state.t_my_rem[i], my_p[i]) for i in range(len(my_p))]
                 recommendations.sort(key=lambda x: x[1], reverse=True)
                 
@@ -487,7 +512,6 @@ if file_matchups and file_deck_freq and file_class_freq:
 
                 st.write("---")
                 
-                # 3. RECORD GAME RESULT
                 st.write("### 📝 Record Game Result")
                 rc1, rc2 = st.columns(2)
                 with rc1:
@@ -511,14 +535,12 @@ if file_matchups and file_deck_freq and file_class_freq:
                             if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
                             st.rerun()
             
-            # Render Match History (Outdented so it persists after the match ends)
             if st.session_state.t_history:
                 st.write("---")
                 st.write("#### 📜 Match History")
                 for i, log in enumerate(st.session_state.t_history):
                     st.write(f"**Game {i+1}:** {log}")
                     
-                # If the match is over, provide a clean copy-paste box
                 if not st.session_state.t_my_rem or not st.session_state.t_opp_status:
                     st.write("### 📋 Export Match Log")
                     
@@ -533,11 +555,9 @@ if file_matchups and file_deck_freq and file_class_freq:
                     ]
                     
                     for i, log in enumerate(st.session_state.t_history):
-                        # Strip markdown formatting for clean plain-text copy
                         clean_txt = log.replace("🟢 **WIN:** ", "WIN: ").replace("🔴 **LOSS:** ", "LOSS: ")
                         clean_logs.append(f"Game {i+1}: {clean_txt}")
                     
-                    # Uses Streamlit's code block which has a native copy-to-clipboard button
                     st.code("\n".join(clean_logs), language="text")
 
             st.write("---")
