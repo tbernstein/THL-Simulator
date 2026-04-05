@@ -521,7 +521,17 @@ if file_matchups and file_deck_freq and file_class_freq:
                 # If the match is over, provide a clean copy-paste box
                 if not st.session_state.t_my_rem or not st.session_state.t_opp_status:
                     st.write("### 📋 Export Match Log")
-                    clean_logs = []
+                    
+                    my_score = sum(1 for log in st.session_state.t_history if "🟢 **WIN:**" in log)
+                    opp_score = sum(1 for log in st.session_state.t_history if "🔴 **LOSS:**" in log)
+                    winner = "Player (You)" if my_score > opp_score else "Opponent"
+                    
+                    clean_logs = [
+                        f"Winner: {winner}",
+                        f"Final Score: {my_score} - {opp_score}",
+                        "-------------------"
+                    ]
+                    
                     for i, log in enumerate(st.session_state.t_history):
                         # Strip markdown formatting for clean plain-text copy
                         clean_txt = log.replace("🟢 **WIN:** ", "WIN: ").replace("🔴 **LOSS:** ", "LOSS: ")
