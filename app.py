@@ -510,26 +510,32 @@ if file_matchups and file_deck_freq and file_class_freq:
                 if st.session_state.get('t_nash_roll'):
                     st.success(f"🎲 **The Nash Die has spoken! You should queue:** {st.session_state.t_nash_roll}")
 
+                st.write("---")
+                
                 # 3. RECORD GAME RESULT
                 st.write("### 📝 Record Game Result")
-                rc1, rc2 = st.columns(2)
-                with rc1:
+                
+                rec_col1, rec_col2 = st.columns(2)
+                with rec_col1:
                     played_my = st.selectbox("I played:", st.session_state.t_my_rem)
-                    if st.button("🟢 I Won (Remove my deck)"):
-                        st.session_state.t_my_rem.remove(played_my)
-                        st.session_state.t_history.append(f"🟢 **WIN:** {played_my} won")
-                        if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
-                        st.rerun()
-                with rc2:
+                with rec_col2:
                     opp_classes_rem = list(st.session_state.t_opp_status.keys())
                     played_opp_c = st.selectbox("Opponent played class:", opp_classes_rem)
                     
-                    if st.session_state.t_opp_status[played_opp_c] == "Unknown":
-                        st.warning("⚠️ Reveal their specific archetype above before logging their win.")
-                    else:
-                        if st.button("🔴 Opponent Won (Remove their deck)"):
-                            # FIX: Capture the archetype BEFORE deleting it from the active status dict
-                            played_arch = st.session_state.t_opp_status[played_opp_c]
+                if st.session_state.t_opp_status[played_opp_c] == "Unknown":
+                    st.warning("⚠️ Reveal their specific archetype above before logging the game result.")
+                else:
+                    played_arch = st.session_state.t_opp_status[played_opp_c]
+                    
+                    btn_col1, btn_col2 = st.columns(2)
+                    with btn_col1:
+                        if st.button(f"🟢 I Won (Remove {played_my})", use_container_width=True):
+                            st.session_state.t_my_rem.remove(played_my)
+                            st.session_state.t_history.append(f"🟢 **WIN:** {played_my} defeated {played_arch}")
+                            if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
+                            st.rerun()
+                    with btn_col2:
+                        if st.button(f"🔴 Opponent Won (Remove {played_arch})", use_container_width=True):
                             del st.session_state.t_opp_status[played_opp_c]
                             st.session_state.t_history.append(f"🔴 **LOSS:** {played_my} lost to {played_arch}")
                             if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
