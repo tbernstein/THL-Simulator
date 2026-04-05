@@ -510,8 +510,7 @@ if file_matchups and file_deck_freq and file_class_freq:
                 if st.session_state.get('t_nash_roll'):
                     st.success(f"🎲 **The Nash Die has spoken! You should queue:** {st.session_state.t_nash_roll}")
 
-                st.write("---")
-                
+                # 3. RECORD GAME RESULT
                 st.write("### 📝 Record Game Result")
                 rc1, rc2 = st.columns(2)
                 with rc1:
@@ -529,6 +528,7 @@ if file_matchups and file_deck_freq and file_class_freq:
                         st.warning("⚠️ Reveal their specific archetype above before logging their win.")
                     else:
                         if st.button("🔴 Opponent Won (Remove their deck)"):
+                            # FIX: Capture the archetype BEFORE deleting it from the active status dict
                             played_arch = st.session_state.t_opp_status[played_opp_c]
                             del st.session_state.t_opp_status[played_opp_c]
                             st.session_state.t_history.append(f"🔴 **LOSS:** {played_my} lost to {played_arch}")
