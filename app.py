@@ -423,6 +423,9 @@ if file_matchups and file_deck_freq and file_class_freq:
             st.session_state.t_my_rem = []
             st.session_state.t_opp_status = {}
             st.session_state.t_history = []
+            # NEW: Track starting states to prevent variable loss on Streamlit re-runs
+            st.session_state.t_start_my = []
+            st.session_state.t_start_opp_revealed = {}
             if 't_nash_roll' in st.session_state:
                 del st.session_state['t_nash_roll']
 
@@ -439,6 +442,11 @@ if file_matchups and file_deck_freq and file_class_freq:
                     st.session_state.t_active = True
                     st.session_state.t_my_rem = list(start_my)
                     st.session_state.t_opp_status = {c: "Unknown" for c in start_opp_classes}
+                    
+                    # Store exact initial values in persistent state for the export log
+                    st.session_state.t_start_my = list(start_my)
+                    st.session_state.t_start_opp_revealed = {c: f"Unknown {c}" for c in start_opp_classes}
+                    
                     st.session_state.t_history = []
                     if 't_nash_roll' in st.session_state:
                         del st.session_state['t_nash_roll']
@@ -463,12 +471,16 @@ if file_matchups and file_deck_freq and file_class_freq:
                             revealed = st.selectbox(f"{c} Archetype:", options, key=f"rev_{c}")
                             if revealed != "Unknown":
                                 st.session_state.t_opp_status[c] = revealed
+                                # Save the revealed archetype for the final export log
+                                st.session_state.t_start_opp_revealed[c] = revealed
                                 if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
                                 st.rerun()
                         else:
                             st.success(f"**{c}**\n{status}")
                             if st.button("Undo", key=f"undo_{c}"):
                                 st.session_state.t_opp_status[c] = "Unknown"
+                                # Undo it in the export log tracker too
+                                st.session_state.t_start_opp_revealed[c] = f"Unknown {c}"
                                 if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
                                 st.rerun()
                             
@@ -554,27 +566,9 @@ if file_matchups and file_deck_freq and file_class_freq:
                     opp_score = sum(1 for log in st.session_state.t_history if "🔴 **LOSS:**" in log)
                     winner = "Player (You)" if my_score > opp_score else "Opponent"
                     
-                    # Identify initial starting lineups
-                    my_starting_lineup = list(start_my)
-                    opp_starting_classes = list(start_opp_classes)
-                    
-                    # Try to get specific archetypes if they were revealed during the match
-                    opp_starting_lineup = []
-                    for c in opp_starting_classes:
-                        # Find the deck they played in the history logs
-                        found_deck = False
-                        for log in st.session_state.t_history:
-                            if f"to {c}" in log or f"defeated {c}" in log:
-                                # Extract archetype name from log (e.g. "lost to Herald Shaman")
-                                parts = log.split("to " if "lost to" in log else "defeated ")
-                                if len(parts) > 1:
-                                    deck_name = parts[1].strip()
-                                    if c in deck_name:
-                                        opp_starting_lineup.append(deck_name)
-                                        found_deck = True
-                                        break
-                        if not found_deck:
-                            opp_starting_lineup.append(f"Unknown {c}")
+                    # Fetch starting lineups securely from session state
+                    my_starting_lineup = st.session_state.t_start_my
+                    opp_starting_lineup = list(st.session_state.t_start_opp_revealed.values())
 
                     clean_logs = [
                         f"Winner: {winner}",
