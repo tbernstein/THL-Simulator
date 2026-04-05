@@ -4,10 +4,11 @@ import itertools
 import random
 import statistics
 import pandas as pd
+import io
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V15", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V20", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 def get_class_from_deck(deck_name):
@@ -21,9 +22,6 @@ def get_weighted_classes(classes, class_weights, k=4):
         pick = random.choices(classes, weights=weights, k=1)[0]
         chosen.add(pick)
     return list(chosen)
-
-def get_archetype_prob(deck_name, arch_weights):
-    return arch_weights.get(deck_name, 1.0)
 
 def simulate_conquest_bo5(my_decks, opp_decks, win_rates, iterations=150):
     wins = 0
@@ -109,28 +107,42 @@ file_mastery = st.sidebar.file_uploader("Upload Mastery CSV (Optional)", type=['
 # --- DATA PROCESSING ---
 if file_matchups and file_deck_freq and file_class_freq:
     
-    # Load Matchups
-    df_matchups = pd.read_csv(file_matchups)
+    # 1. Load Matchups (Safely skipping vS metadata rows)
+    content_matchups = file_matchups.getvalue().decode('utf-8-sig')
+    reader_m = list(csv.reader(io.StringIO(content_matchups)))
     
-    # Dynamically find the first column (decks) and the opponent columns
-    first_col = df_matchups.columns[0]
-    archetypes = [col.strip() for col in df_matchups.columns[1:] if 'Unnamed' not in col]
+    header_row_m = None
+    for row in reader_m:
+        # Find the row where the first cell is blank and it has many columns (the vS header)
+        if len(row) > 5 and row[0].strip() == '':
+            header_row_m = row
+            break
+            
+    if not header_row_m:
+        st.error("Could not find the header row in Matchups CSV. Make sure it's the vS Gold format.")
+        st.stop()
+        
+    archetypes = [h.strip() for h in header_row_m[1:] if h.strip()]
     
     win_rates = {}
-    for index, row in df_matchups.iterrows():
-        my_d = str(row[first_col]).strip()
-        win_rates[my_d] = {}
-        for opp_deck in archetypes:
-            try:
-                val = float(row[opp_deck])
-                if val > 1.5: val = val / 100.0  # Handle 54.0 vs 0.54
-                win_rates[my_d][opp_deck] = val
-            except:
-                win_rates[my_d][opp_deck] = 0.5
+    for row in reader_m:
+        if not row or row == header_row_m or not row[0].strip(): continue
+        # Only process rows that look like matchup data
+        if len(row) > len(archetypes) // 2:
+            my_d = str(row[0]).strip()
+            win_rates[my_d] = {}
+            for i, opp_deck in enumerate(archetypes):
+                try:
+                    val = float(row[i+1])
+                    if val > 1.5: val = val / 100.0  # Handle 54.0 vs 0.54
+                    win_rates[my_d][opp_deck] = val
+                except:
+                    win_rates[my_d][opp_deck] = 0.5
 
-    # Apply Mastery
+    # 2. Apply Mastery
     mastery_logs = []
     if file_mastery:
+        # Mastery CSV is user-generated, so pandas is safe here
         df_mastery = pd.read_csv(file_mastery)
         win_rates, mastery_logs = apply_mastery_adjustments(win_rates, df_mastery)
 
@@ -140,24 +152,35 @@ if file_matchups and file_deck_freq and file_class_freq:
         class_map[get_class_from_deck(d)].append(d)
     all_classes = list(class_map.keys())
 
-    # Load Frequencies
-    df_deck = pd.read_csv(file_deck_freq)
-    deck_freqs = {}
+    # 3. Load Deck Frequencies
+    content_deck = file_deck_freq.getvalue().decode('utf-8-sig')
+    reader_d = list(csv.reader(io.StringIO(content_deck)))
     try:
-        l_col = [c for c in df_deck.columns if c.strip() == 'L'][0]
-        for _, row in df_deck.iterrows():
-            deck_freqs[str(row.iloc[0]).strip()] = float(row[l_col])
-    except IndexError:
-        st.sidebar.error("Could not find 'L' column in Deck Frequency.")
+        header_row_d = next(r for r in reader_d if r and r[0].strip() == 'Rank')
+        l_index = header_row_d.index('L')
+        deck_freqs = {}
+        for row in reader_d:
+            if not row or row == header_row_d: continue
+            try: deck_freqs[row[0].strip()] = float(row[l_index])
+            except: pass
+    except StopIteration:
+        st.sidebar.error("Could not find 'Rank' row in Deck Frequency.")
+        st.stop()
 
-    df_class = pd.read_csv(file_class_freq)
-    class_freqs = {}
+    # 4. Load Class Frequencies
+    content_class = file_class_freq.getvalue().decode('utf-8-sig')
+    reader_c = list(csv.reader(io.StringIO(content_class)))
     try:
-        l_col = [c for c in df_class.columns if c.strip() == 'L'][0]
-        for _, row in df_class.iterrows():
-            class_freqs[str(row.iloc[0]).strip()] = float(row[l_col])
-    except IndexError:
-        st.sidebar.error("Could not find 'L' column in Class Frequency.")
+        header_row_c = next(r for r in reader_c if r and r[0].strip() == 'Rank')
+        l_index_c = header_row_c.index('L')
+        class_freqs = {}
+        for row in reader_c:
+            if not row or row == header_row_c: continue
+            try: class_freqs[row[0].strip()] = float(row[l_index_c])
+            except: pass
+    except StopIteration:
+        st.sidebar.error("Could not find 'Rank' row in Class Frequency.")
+        st.stop()
 
     # Calculate Weights
     arch_weights = {}
