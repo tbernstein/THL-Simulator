@@ -554,9 +554,35 @@ if file_matchups and file_deck_freq and file_class_freq:
                     opp_score = sum(1 for log in st.session_state.t_history if "🔴 **LOSS:**" in log)
                     winner = "Player (You)" if my_score > opp_score else "Opponent"
                     
+                    # Identify initial starting lineups
+                    my_starting_lineup = list(start_my)
+                    opp_starting_classes = list(start_opp_classes)
+                    
+                    # Try to get specific archetypes if they were revealed during the match
+                    opp_starting_lineup = []
+                    for c in opp_starting_classes:
+                        # Find the deck they played in the history logs
+                        found_deck = False
+                        for log in st.session_state.t_history:
+                            if f"to {c}" in log or f"defeated {c}" in log:
+                                # Extract archetype name from log (e.g. "lost to Herald Shaman")
+                                parts = log.split("to " if "lost to" in log else "defeated ")
+                                if len(parts) > 1:
+                                    deck_name = parts[1].strip()
+                                    if c in deck_name:
+                                        opp_starting_lineup.append(deck_name)
+                                        found_deck = True
+                                        break
+                        if not found_deck:
+                            opp_starting_lineup.append(f"Unknown {c}")
+
                     clean_logs = [
                         f"Winner: {winner}",
                         f"Final Score: {my_score} - {opp_score}",
+                        "-------------------",
+                        "STARTING LINEUPS",
+                        f"You:      {', '.join(my_starting_lineup)}",
+                        f"Opponent: {', '.join(opp_starting_lineup)}",
                         "-------------------"
                     ]
                     
