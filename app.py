@@ -539,6 +539,19 @@ if file_matchups and file_deck_freq and file_class_freq:
                         recommendations = [(st.session_state.t_my_rem[i], my_p[i]) for i in range(len(my_p))]
                         recommendations.sort(key=lambda x: x[1], reverse=True)
                         st.info(f"💡 **NASH LEAD RECOMMENDATION: Queue {recommendations[0][0]}** ({recommendations[0][1]*100:.1f}% mix)")
+                        
+                        # Added Sweep Potential explicitly for Game 1 Leads!
+                        st.write("#### 🧹 Game 1 Sweep Potential:")
+                        lead_sweeps = []
+                        for m in st.session_state.t_my_rem:
+                            sweep_prob = 1.0
+                            for opp_rem_deck in assumed_opp_rem:
+                                sweep_prob *= win_rates.get(m, {}).get(opp_rem_deck, 0.5)
+                            lead_sweeps.append((m, sweep_prob))
+                        
+                        lead_sweeps.sort(key=lambda x: x[1], reverse=True)
+                        for m, sweep in lead_sweeps:
+                            st.write(f"- **{m}**: **{sweep*100:.1f}%** chance to 3-0 sweep")
                     
                     elif st.session_state.t_my_active is not None:
                         st.success(f"🔥 **You are King of the Hill!** Locked on **{st.session_state.t_my_active}**.")
