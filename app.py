@@ -365,7 +365,7 @@ if file_matchups and file_deck_freq and file_class_freq:
                                 highest_opp_wr = opp_wr_against_anchor
                                 target_ban_class = opp_c
                         opp_counter_deck = max(class_map[target_ban_class], key=lambda d: arch_weights.get(d, 1.0))
-                        cohesion_score = sum(1 for my_d in baseline_my_decks if win_rates.get(my_d, {}).get(opp_counter_deck, 0.5) > 0.5)
+                        cohesion_score = sum(1 for my_d in baseline_my_decks if win_rates.get(my_d, {}).get(opp_counter_deck, 0.5) < 0.5)
 
                     all_results.append({
                         "Class Lineup": ", ".join(my_class_combo),
