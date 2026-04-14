@@ -148,6 +148,22 @@ def get_ban_matrix(my_4, opp_4, win_rates, memo, mode):
         ban_matrix.append(row)
     return ban_matrix
 
+def get_sniper_details(deck, opp_decks, win_rates, high_thresh=0.65, low_thresh=0.45):
+    """
+    Identifies if a deck is a 'Sniper'.
+    Returns (Best Target, Best WR, Worst Matchup, Worst WR) if it qualifies.
+    """
+    if not opp_decks or len(opp_decks) < 2: 
+        return None
+        
+    wrs = {o: win_rates.get(deck, {}).get(o, 0.5) for o in opp_decks}
+    max_o = max(wrs, key=wrs.get)
+    min_o = min(wrs, key=wrs.get)
+    
+    if wrs[max_o] >= high_thresh and wrs[min_o] <= low_thresh:
+        return (max_o, wrs[max_o], min_o, wrs[min_o])
+    return None
+
 # --- HELPER FUNCTIONS ---
 def get_class_from_deck(deck_name):
     return str(deck_name).split()[-1]
@@ -373,13 +389,25 @@ if file_matchups and file_deck_freq and file_class_freq:
                         # FLIPPED: Now correctly calculates how many decks lose to the target ban, thus are "Protected"
                         cohesion_score = sum(1 for my_d in baseline_my_decks if win_rates.get(my_d, {}).get(opp_counter_deck, 0.5) < 0.5)
 
-                    all_results.append({
+                    res_dict = {
                         "Class Lineup": ", ".join(my_class_combo),
                         "Expected WR": statistics.mean(matchup_wrs),
                         "Floor": min(matchup_wrs),
                         "Target Ban": target_ban_class,
                         "Cohesion": f"{cohesion_score}/4 Protected"
-                    })
+                    }
+                    
+                    # Snipe Logic for Phase 1
+                    if match_format == "Hero (Last Hero Standing)":
+                        sniper_classes = []
+                        opp_baselines = [max(class_map[oc], key=lambda x: arch_weights.get(x, 1.0)) for oc in all_classes]
+                        for c in my_class_combo:
+                            c_deck = max(class_map[c], key=lambda d: arch_weights.get(d, 1.0))
+                            if get_sniper_details(c_deck, opp_baselines, win_rates):
+                                sniper_classes.append(c)
+                        res_dict["Snipers"] = ", ".join(sniper_classes) if sniper_classes else "None"
+
+                    all_results.append(res_dict)
 
                 all_results = sorted(all_results, key=lambda x: x["Expected WR"], reverse=True)
                 
@@ -448,6 +476,20 @@ if file_matchups and file_deck_freq and file_class_freq:
             res_col1, res_col2 = st.columns(2)
             with res_col1: st.error(f"🛑 **YOU SHOULD BAN:** {best_my_ban}")
             with res_col2: st.warning(f"🛑 **EXPECT THEM TO BAN:** {best_opp_ban}")
+
+            # Snipe Logic for Phase 2
+            if match_format == "Hero (Last Hero Standing)":
+                snipers = []
+                for m_deck in selected_my_4:
+                    s_info = get_sniper_details(m_deck, opp_4, win_rates)
+                    if s_info:
+                        snipers.append((m_deck, s_info[0], s_info[1], s_info[2], s_info[3]))
+                        
+                if snipers:
+                    st.write("---")
+                    st.write("### 🎯 Sniper Decks Identified")
+                    for s in snipers:
+                        st.info(f"**{s[0]}** is a Sniper! Crushes **{s[1]}** ({s[2]*100:.1f}%) but loses to **{s[3]}** ({s[4]*100:.1f}%). Keep it benched until {s[1]} appears!")
 
             st.write("---")
             st.write("### 🧮 4x4 Ban Matrix")
@@ -536,6 +578,15 @@ if file_matchups and file_deck_freq and file_class_freq:
                     if st.session_state.t_my_active is None and st.session_state.t_opp_active is None:
                         val, my_p, opp_p = get_lhs_val(st.session_state.t_my_rem, assumed_opp_rem, None, None, win_rates, memo)
                         st.write(f"### 🎯 Game 1 Lead Predictor (BO5 Win Probability: {val * 100:.1f}%)")
+                        
+                        # Snipe Logic for Game 1 Warnings
+                        snipers_rem = []
+                        for m in st.session_state.t_my_rem:
+                            if get_sniper_details(m, assumed_opp_rem, win_rates):
+                                snipers_rem.append(m)
+                        if snipers_rem:
+                            st.warning(f"🎯 **Bench Warning:** You have Snipers in your lineup (**{', '.join(snipers_rem)}**). Consider keeping them benched in Game 1 unless Nash strongly recommends otherwise!")
+
                         recommendations = [(st.session_state.t_my_rem[i], my_p[i]) for i in range(len(my_p))]
                         recommendations.sort(key=lambda x: x[1], reverse=True)
                         st.info(f"💡 **NASH LEAD RECOMMENDATION: Queue {recommendations[0][0]}** ({recommendations[0][1]*100:.1f}% mix)")
@@ -574,7 +625,14 @@ if file_matchups and file_deck_freq and file_class_freq:
                         
                         counter_recs.sort(key=lambda x: x[1], reverse=True)
                         for m, wr, sweep in counter_recs:
-                            st.write(f"- **{m}**: Expected WR **{wr*100:.1f}%** vs King (🧹 Sweep Potential: **{sweep*100:.1f}%**)")
+                            # Check if this deck is a Sniper targeting the current King
+                            s_info = get_sniper_details(m, assumed_opp_rem, win_rates)
+                            is_sniper_for_king = s_info and s_info[0] == st.session_state.t_opp_active
+                            
+                            prefix = "🎯 " if is_sniper_for_king else "- "
+                            sniper_txt = " *(Sniper deployed!)*" if is_sniper_for_king else ""
+                            
+                            st.write(f"{prefix}**{m}**: Expected WR **{wr*100:.1f}%** vs King (🧹 Sweep Potential: **{sweep*100:.1f}%**){sniper_txt}")
 
                 # Conditionally show the Die Roll UI only when appropriate
                 if match_format == "Legacy (Conquest)" or (match_format == "Hero (Last Hero Standing)" and st.session_state.t_my_active is None and st.session_state.t_opp_active is None):
