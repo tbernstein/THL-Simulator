@@ -331,8 +331,12 @@ if file_matchups and file_deck_freq and file_class_freq:
                 for my_class_combo in class_combos:
                     matchup_wrs = []
                     for opp_decks in meta_field:
-                        my_dynamic_decks = [max(class_map[c], key=lambda d: sum(win_rates.get(d, {}).get(od, 0.5) for od in opp_decks)) for c in my_class_combo]
-                        
+                        if match_format == "Legacy (Conquest)":
+                            # Legacy: Optimize for highest average performance across the board
+                            my_dynamic_decks = [max(class_map[c], key=lambda d: sum(win_rates.get(d, {}).get(od, 0.5) for od in opp_decks)) for c in my_class_combo]
+                        else:
+                            # Hero Mode: Optimize for peak polarization (find the Slayer)
+                            my_dynamic_decks = [max(class_map[c], key=lambda d: max([win_rates.get(d, {}).get(od, 0.5) for od in opp_decks])) for c in my_class_combo]
                         if match_format == "Legacy (Conquest)":
                             wr = simulate_conquest_bo5(list(my_dynamic_decks), list(opp_decks), win_rates, iterations=100)
                         else:
