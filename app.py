@@ -148,11 +148,11 @@ def get_ban_matrix(my_4, opp_4, win_rates, memo, mode):
         ban_matrix.append(row)
     return ban_matrix
 
-def get_sniper_details(deck, opp_decks, win_rates, high_thresh=0.65, avg_floor_thresh=0.49):
+def get_sniper_details(deck, opp_decks, win_rates, high_thresh=0.65, avg_floor_thresh=0.52):
     """
     Identifies if a deck is a 'Sniper'.
     A true sniper heavily counters a specific target (>= 65%), 
-    but struggles against the rest of the field on average (< 49%).
+    but struggles against the rest of the field on average (< 52%).
     """
     if not opp_decks or len(opp_decks) < 2: 
         return None
@@ -407,9 +407,12 @@ if file_matchups and file_deck_freq and file_class_freq:
                         sniper_classes = []
                         opp_baselines = [max(class_map[oc], key=lambda x: arch_weights.get(x, 1.0)) for oc in all_classes]
                         for c in my_class_combo:
-                            c_deck = max(class_map[c], key=lambda d: arch_weights.get(d, 1.0))
-                            if get_sniper_details(c_deck, opp_baselines, win_rates):
-                                sniper_classes.append(c)
+                            # Check ALL decks in the class to see if a sniper archetype exists
+                            for c_deck in class_map[c]:
+                                if get_sniper_details(c_deck, opp_baselines, win_rates):
+                                    if c not in sniper_classes:
+                                        sniper_classes.append(c)
+                                    break
                         res_dict["Snipers"] = ", ".join(sniper_classes) if sniper_classes else "None"
 
                     all_results.append(res_dict)
