@@ -8,7 +8,15 @@ import io
 from collections import defaultdict
 
 # --- CONFIG ---
-st.set_page_config(page_title="THL Strategy Command V27", layout="wide")
+st.set_page_config(page_title="THL Strategy Command V28", layout="wide")
+
+# --- FORMAT SELECTION ---
+st.sidebar.header("⚙️ Tournament Format")
+match_format = st.sidebar.radio(
+    "Select Ruleset:", 
+    ["Legacy (Conquest)", "Hero (Last Hero Standing)"]
+)
+st.sidebar.write("---")
 
 # --- CORE MATH & NASH SOLVERS ---
 def solve_zero_sum(matrix, iterations=2500):
@@ -54,8 +62,8 @@ def solve_zero_sum(matrix, iterations=2500):
     v_lower = min(col_cum) / iterations
     return [p / iterations for p in row_plays], [p / iterations for p in col_plays], (v_upper + v_lower) / 2.0
 
-def get_nash_queue(my_rem, opp_rem, win_rates, memo):
-    """Recursively calculates the exact Conquest BO5 win rate and Queueing Nash Equilibrium."""
+def get_nash_queue_conquest(my_rem, opp_rem, win_rates, memo):
+    """Recursively calculates exact Conquest BO5 win rate."""
     state = (tuple(sorted(my_rem)), tuple(sorted(opp_rem)))
     if state in memo:
         return memo[state]
@@ -68,10 +76,9 @@ def get_nash_queue(my_rem, opp_rem, win_rates, memo):
         row = []
         for o_deck in opp_rem:
             wr = win_rates.get(m_deck, {}).get(o_deck, 0.5)
-            # If I win, my deck is removed
-            v_win, _, _ = get_nash_queue([d for d in my_rem if d != m_deck], opp_rem, win_rates, memo)
-            # If I lose, opp deck is removed
-            v_lose, _, _ = get_nash_queue(my_rem, [d for d in opp_rem if d != o_deck], win_rates, memo)
+            # Conquest: I win -> my deck removed. I lose -> opp deck removed.
+            v_win, _, _ = get_nash_queue_conquest([d for d in my_rem if d != m_deck], opp_rem, win_rates, memo)
+            v_lose, _, _ = get_nash_queue_conquest(my_rem, [d for d in opp_rem if d != o_deck], win_rates, memo)
             row.append(wr * v_win + (1 - wr) * v_lose)
         matrix.append(row)
 
@@ -79,17 +86,63 @@ def get_nash_queue(my_rem, opp_rem, win_rates, memo):
     memo[state] = (val, my_p, opp_p)
     return val, my_p, opp_p
 
-def get_ban_matrix(my_4, opp_4, win_rates, memo):
-    """Generates the 4x4 Ban Matrix to find optimal bans and BO5 Win Rate."""
-    # Row: I choose what to ban from Opp. (Maximize)
-    # Col: Opp chooses what to ban from Me. (Minimize)
+def get_lhs_val(my_rem, opp_rem, my_active, opp_active, win_rates, memo):
+    """Recursively calculates exact Last Hero Standing BO5 win rate."""
+    state = (tuple(sorted(my_rem)), tuple(sorted(opp_rem)), my_active, opp_active)
+    if state in memo: return memo[state]
+    
+    if not my_rem: return 0.0, [], []
+    if not opp_rem: return 1.0, [], []
+    
+    # Game 1: Simultaneous pick
+    if my_active is None and opp_active is None:
+        matrix = []
+        for m in my_rem:
+            row = []
+            for o in opp_rem:
+                val, _, _ = get_lhs_val(my_rem, opp_rem, m, o, win_rates, memo)
+                row.append(val)
+            matrix.append(row)
+        my_p, opp_p, val = solve_zero_sum(matrix)
+        memo[state] = (val, my_p, opp_p)
+        return val, my_p, opp_p
+
+    # Active Match (Games 2-5)
+    if my_active is not None and opp_active is not None:
+        wr = win_rates.get(my_active, {}).get(opp_active, 0.5)
+        
+        # I win: Opponent's active deck is removed. They pick next to minimize my value.
+        opp_rem_after_win = [d for d in opp_rem if d != opp_active]
+        if not opp_rem_after_win:
+            v_win = 1.0
+        else:
+            v_win = min([get_lhs_val(my_rem, opp_rem_after_win, my_active, next_o, win_rates, memo)[0] for next_o in opp_rem_after_win])
+        
+        # I lose: My active deck is removed. I pick next to maximize my value.
+        my_rem_after_lose = [d for d in my_rem if d != my_active]
+        if not my_rem_after_lose:
+            v_lose = 0.0
+        else:
+            v_lose = max([get_lhs_val(my_rem_after_lose, opp_rem, next_m, opp_active, win_rates, memo)[0] for next_m in my_rem_after_lose])
+            
+        val = wr * v_win + (1 - wr) * v_lose
+        memo[state] = (val, [], [])
+        return val, [], []
+        
+    return 0.0, [], []
+
+def get_ban_matrix(my_4, opp_4, win_rates, memo, mode):
+    """Generates the 4x4 Ban Matrix to find optimal bans."""
     ban_matrix = []
     for my_ban in opp_4:
         row = []
         opp_3 = [d for d in opp_4 if d != my_ban]
         for opp_ban in my_4:
             my_3 = [d for d in my_4 if d != opp_ban]
-            val, _, _ = get_nash_queue(my_3, opp_3, win_rates, memo)
+            if mode == "Legacy (Conquest)":
+                val, _, _ = get_nash_queue_conquest(my_3, opp_3, win_rates, memo)
+            else:
+                val, _, _ = get_lhs_val(my_3, opp_3, None, None, win_rates, memo)
             row.append(val)
         ban_matrix.append(row)
     return ban_matrix
@@ -108,7 +161,6 @@ def get_weighted_classes(classes, class_weights, k=4):
     return list(chosen)
 
 def simulate_conquest_bo5(my_decks, opp_decks, win_rates, iterations=150):
-    # Fast Monte Carlo used only for the broad field simulations in Phase 1
     wins = 0
     rng = random.Random()
     for _ in range(iterations):
@@ -124,26 +176,44 @@ def simulate_conquest_bo5(my_decks, opp_decks, win_rates, iterations=150):
             wins += 1
     return (wins / iterations) * 100
 
+def simulate_lhs_bo5(my_decks, opp_decks, win_rates, iterations=150):
+    wins = 0
+    rng = random.Random()
+    for _ in range(iterations):
+        my_rem, opp_rem = list(my_decks), list(opp_decks)
+        my_active = rng.choice(my_rem)
+        opp_active = rng.choice(opp_rem)
+        
+        while my_rem and opp_rem:
+            wr = win_rates.get(my_active, {}).get(opp_active, 0.5)
+            if rng.random() < wr:
+                # I win
+                opp_rem.remove(opp_active)
+                if opp_rem:
+                    opp_active = min(opp_rem, key=lambda d: win_rates.get(my_active, {}).get(d, 0.5))
+            else:
+                # Opp wins
+                my_rem.remove(my_active)
+                if my_rem:
+                    my_active = max(my_rem, key=lambda d: win_rates.get(d, {}).get(opp_active, 0.5))
+        if not opp_rem:
+            wins += 1
+    return (wins / iterations) * 100
+
 def apply_mastery_adjustments(win_rates, df_mastery):
     if df_mastery is None or df_mastery.empty:
         return win_rates, []
 
-    # Nohands Gamer 4-Tier Scale Modifiers
     tier_modifiers = {
-        'S': 0.045,  # 250+ games: Max edge
-        'A': 0.015,  # 100-250 games: Solid edge
-        'B': -0.035, # 50-100 games: Below vS baseline
-        'C': -0.10   # <50 games: Severe penalty (Do not bring)
+        'S': 0.045,  'A': 0.015,  'B': -0.035, 'C': -0.10   
     }
     
     adjustment_logs = []
-
     for index, row in df_mastery.iterrows():
         try:
             deck_name = str(row.iloc[0]).strip()
             tier = str(row.iloc[1]).strip().upper()
-        except (ValueError, TypeError, IndexError):
-            continue
+        except: continue
 
         if tier in tier_modifiers:
             modifier = tier_modifiers[tier]
@@ -158,25 +228,10 @@ def apply_mastery_adjustments(win_rates, df_mastery):
 
 # --- SIDEBAR UI: FILE UPLOADS ---
 st.sidebar.header("📁 Step 1: Upload Data")
-
-st.sidebar.markdown("**1. Matchup Table** *Optimized for download from vS Gold. Rows are your decks, columns are opponents.*")
-file_matchups = st.sidebar.file_uploader("Upload Matchup Table", type=['csv'], key="m_up")
-
-st.sidebar.markdown("**2. Deck Frequency** *Contains the popularity of specific deck archetypes from vS Gold.*")
-file_deck_freq = st.sidebar.file_uploader("Upload Deck Frequency", type=['csv'], key="d_freq")
-
-st.sidebar.markdown("**3. Class Frequency** *Contains the overall popularity of each class from vS Gold.*")
-file_class_freq = st.sidebar.file_uploader("Upload Class Frequency", type=['csv'], key="c_freq")
-
-st.sidebar.markdown("""
-**4. Mastery Data (Optional)** *Adjusts win rates based on the Nohands Gamer mastery scale.*
-**Format:** 2 columns (`Deck Name`, `Tier`)
-* **S:** 250+ games (+4.5% WR)
-* **A:** 100-250 games (+1.5% WR)
-* **B:** 50-100 games (-3.5% WR)
-* **C:** <50 games (-10.0% WR)
-""")
-file_mastery = st.sidebar.file_uploader("Upload Mastery CSV", type=['csv'], key="mastery")
+file_matchups = st.sidebar.file_uploader("1. Upload Matchup Table (vS Gold)", type=['csv'], key="m_up")
+file_deck_freq = st.sidebar.file_uploader("2. Upload Deck Frequency", type=['csv'], key="d_freq")
+file_class_freq = st.sidebar.file_uploader("3. Upload Class Frequency", type=['csv'], key="c_freq")
+file_mastery = st.sidebar.file_uploader("4. Upload Mastery CSV (Optional)", type=['csv'], key="mastery")
 
 # --- DATA PROCESSING ---
 if file_matchups and file_deck_freq and file_class_freq:
@@ -187,11 +242,10 @@ if file_matchups and file_deck_freq and file_class_freq:
     header_row_m = None
     for row in reader_m:
         if len(row) > 5 and row[0].strip() == '':
-            header_row_m = row
-            break
+            header_row_m = row; break
             
     if not header_row_m:
-        st.error("Could not find the header row in Matchups CSV. Make sure it's the vS Gold format.")
+        st.error("Could not find the header row in Matchups CSV.")
         st.stop()
         
     archetypes = [h.strip() for h in header_row_m[1:] if h.strip()]
@@ -230,9 +284,7 @@ if file_matchups and file_deck_freq and file_class_freq:
             if not row or row == header_row_d: continue
             try: deck_freqs[row[0].strip()] = float(row[l_index])
             except: pass
-    except StopIteration:
-        st.sidebar.error("Could not find 'Rank' row in Deck Frequency.")
-        st.stop()
+    except: st.stop()
 
     content_class = file_class_freq.getvalue().decode('utf-8-sig')
     reader_c = list(csv.reader(io.StringIO(content_class)))
@@ -244,42 +296,33 @@ if file_matchups and file_deck_freq and file_class_freq:
             if not row or row == header_row_c: continue
             try: class_freqs[row[0].strip()] = float(row[l_index_c])
             except: pass
-    except StopIteration:
-        st.sidebar.error("Could not find 'Rank' row in Class Frequency.")
-        st.stop()
+    except: st.stop()
 
     arch_weights = {}
     for cls, decks in class_map.items():
         total_cls_freq = sum(deck_freqs.get(d, 0.0) for d in decks)
         for d in decks:
-            if total_cls_freq > 0: 
-                arch_weights[d] = deck_freqs.get(d, 0.0) / total_cls_freq
-            else: 
-                arch_weights[d] = 1.0 / len(decks)
+            if total_cls_freq > 0: arch_weights[d] = deck_freqs.get(d, 0.0) / total_cls_freq
+            else: arch_weights[d] = 1.0 / len(decks)
 
     # --- MAIN APP UI ---
     tab1, tab2, tab3 = st.tabs(["1️⃣ Class Lineup Optimizer", "2️⃣ Archetype & Ban Optimizer", "3️⃣ Live Match Tracker"])
 
     # === TAB 1: PHASE 1 ===
     with tab1:
-        st.header("Phase 1: Broad Class Lineup Optimizer")
-        st.write("Generates the best 4-class lineups against the general ladder meta. Incorporates 'optionality value' by dynamically picking the best archetype per class based on the opponent's simulated lineup.")
-        st.write("**Cohesion Score:** Shows how many of your decks directly benefit from banning the 'Target Ban' class (win rate < 50% vs that class). A score of 3/4 or 4/4 means strong Ban Synergy.")
+        st.header(f"Phase 1: Broad Class Lineup Optimizer ({match_format})")
+        st.write("Generates the best 4-class lineups against the general ladder meta. Incorporates 'optionality value'.")
         
         if mastery_logs:
             with st.expander("🛠️ Mastery Adjustments Applied", expanded=True):
-                for log in mastery_logs:
-                    st.write(log)
+                for log in mastery_logs: st.write(log)
         
         if st.button("Generate Recommended Class Lineups", type="primary"):
             with st.spinner("Simulating Field and Running Monte Carlo Matchups..."):
                 meta_field = []
                 for _ in range(150):
                     opp_classes = get_weighted_classes(all_classes, class_freqs, 4)
-                    opp_decks = []
-                    for c in opp_classes:
-                        best_d = max(class_map[c], key=lambda d: arch_weights.get(d, 1.0))
-                        opp_decks.append(best_d)
+                    opp_decks = [max(class_map[c], key=lambda d: arch_weights.get(d, 1.0)) for c in opp_classes]
                     meta_field.append(opp_decks)
 
                 class_combos = list(itertools.combinations(all_classes, 4))
@@ -288,31 +331,41 @@ if file_matchups and file_deck_freq and file_class_freq:
                 for my_class_combo in class_combos:
                     matchup_wrs = []
                     for opp_decks in meta_field:
-                        my_dynamic_decks = []
-                        for c in my_class_combo:
-                            best_arch = max(class_map[c], key=lambda d: sum(win_rates.get(d, {}).get(od, 0.5) for od in opp_decks))
-                            my_dynamic_decks.append(best_arch)
-                            
-                        wr = simulate_conquest_bo5(list(my_dynamic_decks), list(opp_decks), win_rates, iterations=100)
+                        my_dynamic_decks = [max(class_map[c], key=lambda d: sum(win_rates.get(d, {}).get(od, 0.5) for od in opp_decks)) for c in my_class_combo]
+                        
+                        if match_format == "Legacy (Conquest)":
+                            wr = simulate_conquest_bo5(list(my_dynamic_decks), list(opp_decks), win_rates, iterations=100)
+                        else:
+                            wr = simulate_lhs_bo5(list(my_dynamic_decks), list(opp_decks), win_rates, iterations=100)
                         matchup_wrs.append(wr)
                         
-                    # --- Calculate Cohesion & Target Ban ---
+                    # Target Ban Logic changes based on format
                     baseline_my_decks = [max(class_map[c], key=lambda d: arch_weights.get(d, 1.0)) for c in my_class_combo]
                     
-                    lowest_avg_wr = 1.0
-                    target_ban_class = None
-                    cohesion_score = 0
-                    
-                    for opp_c in all_classes:
-                        opp_baseline_deck = max(class_map[opp_c], key=lambda d: arch_weights.get(d, 1.0))
-                        
-                        wrs_against_target = [win_rates.get(my_d, {}).get(opp_baseline_deck, 0.5) for my_d in baseline_my_decks]
-                        avg_wr = sum(wrs_against_target) / 4.0
-                        
-                        if avg_wr < lowest_avg_wr:
-                            lowest_avg_wr = avg_wr
-                            target_ban_class = opp_c
-                            cohesion_score = sum(1 for w in wrs_against_target if w < 0.5)
+                    if match_format == "Legacy (Conquest)":
+                        lowest_avg_wr = 1.0
+                        target_ban_class = None
+                        cohesion_score = 0
+                        for opp_c in all_classes:
+                            opp_baseline_deck = max(class_map[opp_c], key=lambda d: arch_weights.get(d, 1.0))
+                            wrs_against_target = [win_rates.get(my_d, {}).get(opp_baseline_deck, 0.5) for my_d in baseline_my_decks]
+                            avg_wr = sum(wrs_against_target) / 4.0
+                            if avg_wr < lowest_avg_wr:
+                                lowest_avg_wr = avg_wr
+                                target_ban_class = opp_c
+                                cohesion_score = sum(1 for w in wrs_against_target if w < 0.5)
+                    else: # Hero Mode Target Ban (Protect the Anchor)
+                        anchor_deck = max(baseline_my_decks, key=lambda d: sum(win_rates.get(d, {}).get(max(class_map[oc], key=lambda x: arch_weights.get(x, 1.0)), 0.5) for oc in all_classes) / len(all_classes))
+                        highest_opp_wr = -1
+                        target_ban_class = None
+                        for opp_c in all_classes:
+                            opp_baseline_deck = max(class_map[opp_c], key=lambda d: arch_weights.get(d, 1.0))
+                            opp_wr_against_anchor = 1.0 - win_rates.get(anchor_deck, {}).get(opp_baseline_deck, 0.5)
+                            if opp_wr_against_anchor > highest_opp_wr:
+                                highest_opp_wr = opp_wr_against_anchor
+                                target_ban_class = opp_c
+                        opp_counter_deck = max(class_map[target_ban_class], key=lambda d: arch_weights.get(d, 1.0))
+                        cohesion_score = sum(1 for my_d in baseline_my_decks if win_rates.get(my_d, {}).get(opp_counter_deck, 0.5) > 0.5)
 
                     all_results.append({
                         "Class Lineup": ", ".join(my_class_combo),
@@ -327,28 +380,21 @@ if file_matchups and file_deck_freq and file_class_freq:
                 st.subheader("🔥 Top 10 Class Lineups")
                 df_results = pd.DataFrame(all_results[:10])
                 df_results.index = df_results.index + 1
-                
-                st.dataframe(df_results.style.format({
-                    "Expected WR": "{:.2f}%", 
-                    "Floor": "{:.2f}%"
-                }), use_container_width=True)
-
+                st.dataframe(df_results.style.format({"Expected WR": "{:.2f}%", "Floor": "{:.2f}%"}), use_container_width=True)
 
     # === TAB 2: PHASE 2 ===
     with tab2:
-        st.header("Phase 2: Archetype & Ban Optimizer")
-        st.write("Calculates EXACT Nash Equilibrium BO5 win rates. We recommend the optimal archetypes by default, but you can override them to explore different ban matrices.")
+        st.header(f"Phase 2: Archetype & Ban Optimizer ({match_format})")
+        st.write("Calculates EXACT mathematical BO5 win rates.")
         
         col1, col2 = st.columns(2)
-        with col1:
-            my_classes = st.multiselect("Select My 4 Classes", all_classes, max_selections=4)
-        with col2:
-            opp_classes = st.multiselect("Select Opponent's 4 Classes", all_classes, max_selections=4)
+        with col1: my_classes = st.multiselect("Select My 4 Classes", all_classes, max_selections=4)
+        with col2: opp_classes = st.multiselect("Select Opponent's 4 Classes", all_classes, max_selections=4)
 
         if len(my_classes) == 4 and len(opp_classes) == 4:
             opp_4 = [max(class_map[c], key=lambda d: arch_weights.get(d, 1.0)) for c in opp_classes]
-
-            cache_key = tuple(sorted(my_classes)) + tuple(sorted(opp_4))
+            cache_key = tuple(sorted(my_classes)) + tuple(sorted(opp_4)) + (match_format,)
+            
             if st.session_state.get('phase2_cache_key') != cache_key:
                 with st.spinner("Finding optimal archetypes..."):
                     my_options = [class_map[c] for c in my_classes]
@@ -357,7 +403,7 @@ if file_matchups and file_deck_freq and file_class_freq:
                     best_wr = -1
                     nash_memo = {}
                     for combo in all_my_combos:
-                        ban_matrix = get_ban_matrix(list(combo), opp_4, win_rates, nash_memo)
+                        ban_matrix = get_ban_matrix(list(combo), opp_4, win_rates, nash_memo, match_format)
                         my_ban_p, opp_ban_p, match_wr = solve_zero_sum(ban_matrix)
                         if match_wr > best_wr:
                             best_wr = match_wr
@@ -368,27 +414,21 @@ if file_matchups and file_deck_freq and file_class_freq:
             best_combo = st.session_state['phase2_best_combo']
 
             st.write("---")
-            st.subheader("🛠️ Custom Lineup Editor")
-            st.write("The dropdowns below are pre-loaded with the **mathematically optimal archetypes**. Change them to see how the matrix shifts.")
-
             sel_cols = st.columns(4)
             selected_my_4 = []
-            
             for i, c in enumerate(my_classes):
                 options = class_map[c]
                 default_deck = best_combo[i]
                 default_idx = options.index(default_deck) if default_deck in options else 0
-                
                 with sel_cols[i]:
                     chosen_deck = st.selectbox(f"Your {c}", options, index=default_idx)
                     selected_my_4.append(chosen_deck)
 
             st.write("---")
-            st.subheader("Expected Opponent Lineup")
-            st.info(" , ".join(opp_4))
+            st.info(f"**Expected Opponent Lineup:** {', '.join(opp_4)}")
 
             nash_memo = {}
-            ban_matrix = get_ban_matrix(selected_my_4, opp_4, win_rates, nash_memo)
+            ban_matrix = get_ban_matrix(selected_my_4, opp_4, win_rates, nash_memo, match_format)
             my_ban_p, opp_ban_p, match_wr = solve_zero_sum(ban_matrix)
             
             best_my_ban = opp_4[my_ban_p.index(max(my_ban_p))]
@@ -397,62 +437,48 @@ if file_matchups and file_deck_freq and file_class_freq:
             st.success(f"### Expected Match Win Rate: {match_wr * 100:.2f}%")
             
             res_col1, res_col2 = st.columns(2)
-            with res_col1:
-                st.error(f"🛑 **YOU SHOULD BAN:** {best_my_ban}")
-            with res_col2:
-                st.warning(f"🛑 **EXPECT THEM TO BAN:** {best_opp_ban}")
+            with res_col1: st.error(f"🛑 **YOU SHOULD BAN:** {best_my_ban}")
+            with res_col2: st.warning(f"🛑 **EXPECT THEM TO BAN:** {best_opp_ban}")
 
             st.write("---")
-            st.write("### 🧮 4x4 Ban Matrix (BO5 Expected Win Rates)")
-            st.write("*Rows are the deck YOU ban. Columns are the deck THEY ban. The cell value is YOUR expected win rate.*")
-            
-            df_ban = pd.DataFrame(
-                ban_matrix, 
-                index=[f"Ban {d}" for d in opp_4], 
-                columns=[f"Ban {d}" for d in selected_my_4]
-            )
-            
+            st.write("### 🧮 4x4 Ban Matrix")
+            df_ban = pd.DataFrame(ban_matrix, index=[f"Ban {d}" for d in opp_4], columns=[f"Ban {d}" for d in selected_my_4])
             st.dataframe(df_ban.style.format("{:.2%}").background_gradient(cmap='RdYlGn', axis=None), use_container_width=True)
 
     # === TAB 3: PHASE 3 ===
     with tab3:
-        st.header("Phase 3: Live Match Tracker & Nash Queue")
+        st.header(f"Phase 3: Live Match Tracker ({match_format})")
         
         if 't_active' not in st.session_state:
             st.session_state.t_active = False
             st.session_state.t_my_rem = []
             st.session_state.t_opp_status = {}
             st.session_state.t_history = []
-            # NEW: Track starting states to prevent variable loss on Streamlit re-runs
             st.session_state.t_start_my = []
             st.session_state.t_start_opp_revealed = {}
-            if 't_nash_roll' in st.session_state:
-                del st.session_state['t_nash_roll']
+            # New Hero Mode States
+            st.session_state.t_my_active = None
+            st.session_state.t_opp_active = None
 
         if not st.session_state.t_active:
-            st.write("Select your **3 specific active decks** and the opponent's **3 known classes** (post-ban) to begin.")
+            st.write("Select your 3 specific active decks and the opponent's 3 classes to begin.")
             c1, c2 = st.columns(2)
-            with c1:
-                start_my = st.multiselect("My 3 Active Decks", archetypes, max_selections=3)
-            with c2:
-                start_opp_classes = st.multiselect("Opponent's 3 Active Classes", all_classes, max_selections=3)
+            with c1: start_my = st.multiselect("My 3 Active Decks", archetypes, max_selections=3)
+            with c2: start_opp_classes = st.multiselect("Opponent's 3 Active Classes", all_classes, max_selections=3)
                 
             if st.button("Start Live Match", type="primary"):
                 if len(start_my) == 3 and len(start_opp_classes) == 3:
                     st.session_state.t_active = True
                     st.session_state.t_my_rem = list(start_my)
                     st.session_state.t_opp_status = {c: "Unknown" for c in start_opp_classes}
-                    
-                    # Store exact initial values in persistent state for the export log
                     st.session_state.t_start_my = list(start_my)
                     st.session_state.t_start_opp_revealed = {c: f"Unknown {c}" for c in start_opp_classes}
-                    
                     st.session_state.t_history = []
-                    if 't_nash_roll' in st.session_state:
-                        del st.session_state['t_nash_roll']
+                    st.session_state.t_my_active = None
+                    st.session_state.t_opp_active = None
+                    if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
                     st.rerun()
-                else:
-                    st.error("Select exactly 3 decks for yourself and 3 classes for the opponent.")
+                else: st.error("Select exactly 3 decks and 3 classes.")
                     
         else:
             if not st.session_state.t_my_rem:
@@ -461,8 +487,6 @@ if file_matchups and file_deck_freq and file_class_freq:
                 st.error("💀 **MATCH OVER! OPPONENT WON!**")
             else:
                 st.write("### 🔍 Opponent Lineup Status")
-                st.write("Use the dropdowns to lock in the opponent's specific archetypes as they play them.")
-                
                 opp_cols = st.columns(len(st.session_state.t_opp_status))
                 for i, (c, status) in enumerate(st.session_state.t_opp_status.items()):
                     with opp_cols[i]:
@@ -471,7 +495,6 @@ if file_matchups and file_deck_freq and file_class_freq:
                             revealed = st.selectbox(f"{c} Archetype:", options, key=f"rev_{c}")
                             if revealed != "Unknown":
                                 st.session_state.t_opp_status[c] = revealed
-                                # Save the revealed archetype for the final export log
                                 st.session_state.t_start_opp_revealed[c] = revealed
                                 if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
                                 st.rerun()
@@ -479,11 +502,9 @@ if file_matchups and file_deck_freq and file_class_freq:
                             st.success(f"**{c}**\n{status}")
                             if st.button("Undo", key=f"undo_{c}"):
                                 st.session_state.t_opp_status[c] = "Unknown"
-                                # Undo it in the export log tracker too
                                 st.session_state.t_start_opp_revealed[c] = f"Unknown {c}"
                                 if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
                                 st.rerun()
-                            
                 st.write("---")
 
                 assumed_opp_rem = []
@@ -491,64 +512,89 @@ if file_matchups and file_deck_freq and file_class_freq:
                     if status == "Unknown":
                         best_guess = max(class_map[c], key=lambda d: arch_weights.get(d, 1.0))
                         assumed_opp_rem.append(best_guess)
-                    else:
-                        assumed_opp_rem.append(status)
+                    else: assumed_opp_rem.append(status)
                         
                 memo = {}
-                val, my_p, opp_p = get_nash_queue(st.session_state.t_my_rem, assumed_opp_rem, win_rates, memo)
                 
-                st.write(f"### 🎯 Current BO5 Win Probability: {val * 100:.1f}%")
+                if match_format == "Legacy (Conquest)":
+                    val, my_p, opp_p = get_nash_queue_conquest(st.session_state.t_my_rem, assumed_opp_rem, win_rates, memo)
+                    st.write(f"### 🎯 Current BO5 Win Probability: {val * 100:.1f}%")
+                    recommendations = [(st.session_state.t_my_rem[i], my_p[i]) for i in range(len(my_p))]
+                    recommendations.sort(key=lambda x: x[1], reverse=True)
+                    st.info(f"💡 **NASH RECOMMENDATION: Queue {recommendations[0][0]}** ({recommendations[0][1]*100:.1f}% mix)")
                 
-                recommendations = [(st.session_state.t_my_rem[i], my_p[i]) for i in range(len(my_p))]
-                recommendations.sort(key=lambda x: x[1], reverse=True)
-                
-                st.info(f"💡 **NASH RECOMMENDATION: Queue {recommendations[0][0]}** ({recommendations[0][1]*100:.1f}% mix frequency)")
-                
-                if len(recommendations) > 1:
-                    with st.expander("View full mixed strategy math"):
-                        st.write("If you want to roll a die, use these exact probabilities:")
-                        for deck, prob in recommendations:
-                            if prob > 0.01:
-                                st.write(f"- {deck}: {prob*100:.1f}%")
-
-                if st.button("🎲 Roll the Die (Nash Pick)"):
-                    decks = [r[0] for r in recommendations]
-                    weights = [r[1] for r in recommendations]
-                    if sum(weights) > 0:
-                        st.session_state.t_nash_roll = random.choices(decks, weights=weights, k=1)[0]
-                    else:
-                        st.session_state.t_nash_roll = decks[0]
+                else: # Hero Mode Decision Guidance
+                    if st.session_state.t_my_active is None and st.session_state.t_opp_active is None:
+                        val, my_p, opp_p = get_lhs_val(st.session_state.t_my_rem, assumed_opp_rem, None, None, win_rates, memo)
+                        st.write(f"### 🎯 Game 1 Lead Predictor (BO5 Win Probability: {val * 100:.1f}%)")
+                        recommendations = [(st.session_state.t_my_rem[i], my_p[i]) for i in range(len(my_p))]
+                        recommendations.sort(key=lambda x: x[1], reverse=True)
+                        st.info(f"💡 **NASH LEAD RECOMMENDATION: Queue {recommendations[0][0]}** ({recommendations[0][1]*100:.1f}% mix)")
+                    
+                    elif st.session_state.t_my_active is not None:
+                        st.success(f"🔥 **You are King of the Hill!** Locked on **{st.session_state.t_my_active}**.")
+                        opp_likely = min(assumed_opp_rem, key=lambda d: win_rates.get(st.session_state.t_my_active, {}).get(d, 0.5))
+                        st.warning(f"Expect opponent to counter with: **{opp_likely}**")
                         
-                if st.session_state.get('t_nash_roll'):
-                    st.success(f"🎲 **The Nash Die has spoken! You should queue:** {st.session_state.t_nash_roll}")
+                    elif st.session_state.t_opp_active is not None:
+                        st.error(f"💀 **Opponent is King of the Hill!** Locked on **{st.session_state.t_opp_active}**.")
+                        st.write("### 🎯 Counter-Pick Recommendations")
+                        counter_recs = []
+                        for m in st.session_state.t_my_rem:
+                            wr = win_rates.get(m, {}).get(st.session_state.t_opp_active, 0.5)
+                            counter_recs.append((m, wr))
+                        counter_recs.sort(key=lambda x: x[1], reverse=True)
+                        for m, wr in counter_recs:
+                            st.write(f"- **{m}**: Expected WR {wr*100:.1f}% vs King")
 
                 st.write("---")
-                
-                # 3. RECORD GAME RESULT
                 st.write("### 📝 Record Game Result")
                 
                 rec_col1, rec_col2 = st.columns(2)
                 with rec_col1:
-                    played_my = st.selectbox("I played:", st.session_state.t_my_rem)
+                    if match_format == "Hero (Last Hero Standing)" and st.session_state.t_my_active:
+                        played_my = st.selectbox("I played:", [st.session_state.t_my_active], disabled=True)
+                    else:
+                        played_my = st.selectbox("I played:", st.session_state.t_my_rem)
+                        
                 with rec_col2:
-                    opp_classes_rem = list(st.session_state.t_opp_status.keys())
-                    played_opp_c = st.selectbox("Opponent played class:", opp_classes_rem)
+                    if match_format == "Hero (Last Hero Standing)" and st.session_state.t_opp_active:
+                        opp_active_class = get_class_from_deck(st.session_state.t_opp_active)
+                        played_opp_c = st.selectbox("Opponent played class:", [opp_active_class], disabled=True)
+                        played_arch = st.session_state.t_opp_active
+                    else:
+                        opp_classes_rem = list(st.session_state.t_opp_status.keys())
+                        played_opp_c = st.selectbox("Opponent played class:", opp_classes_rem)
+                        played_arch = st.session_state.t_opp_status[played_opp_c]
                     
                 if st.session_state.t_opp_status[played_opp_c] == "Unknown":
                     st.warning("⚠️ Reveal their specific archetype above before logging the game result.")
                 else:
-                    played_arch = st.session_state.t_opp_status[played_opp_c]
-                    
                     btn_col1, btn_col2 = st.columns(2)
                     with btn_col1:
-                        if st.button(f"🟢 I Won (Remove {played_my})", use_container_width=True):
-                            st.session_state.t_my_rem.remove(played_my)
+                        btn_txt = f"🟢 I Won (Remove {played_my})" if match_format == "Legacy (Conquest)" else f"🟢 I Won (Remove {played_arch})"
+                        if st.button(btn_txt, use_container_width=True):
+                            if match_format == "Legacy (Conquest)":
+                                st.session_state.t_my_rem.remove(played_my)
+                            else: # Hero
+                                del st.session_state.t_opp_status[played_opp_c]
+                                st.session_state.t_my_active = played_my
+                                st.session_state.t_opp_active = None
+                            
                             st.session_state.t_history.append(f"🟢 **WIN:** {played_my} defeated {played_arch}")
                             if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
                             st.rerun()
+                            
                     with btn_col2:
-                        if st.button(f"🔴 Opponent Won (Remove {played_arch})", use_container_width=True):
-                            del st.session_state.t_opp_status[played_opp_c]
+                        btn_txt2 = f"🔴 Opponent Won (Remove {played_arch})" if match_format == "Legacy (Conquest)" else f"🔴 Opponent Won (Remove {played_my})"
+                        if st.button(btn_txt2, use_container_width=True):
+                            if match_format == "Legacy (Conquest)":
+                                del st.session_state.t_opp_status[played_opp_c]
+                            else: # Hero
+                                st.session_state.t_my_rem.remove(played_my)
+                                st.session_state.t_opp_active = played_arch
+                                st.session_state.t_my_active = None
+                                
                             st.session_state.t_history.append(f"🔴 **LOSS:** {played_my} lost to {played_arch}")
                             if 't_nash_roll' in st.session_state: del st.session_state['t_nash_roll']
                             st.rerun()
@@ -561,29 +607,23 @@ if file_matchups and file_deck_freq and file_class_freq:
                     
                 if not st.session_state.t_my_rem or not st.session_state.t_opp_status:
                     st.write("### 📋 Export Match Log")
-                    
                     my_score = sum(1 for log in st.session_state.t_history if "🟢 **WIN:**" in log)
                     opp_score = sum(1 for log in st.session_state.t_history if "🔴 **LOSS:**" in log)
                     winner = "Player (You)" if my_score > opp_score else "Opponent"
                     
-                    # Fetch starting lineups securely from session state
                     my_starting_lineup = st.session_state.t_start_my
                     opp_starting_lineup = list(st.session_state.t_start_opp_revealed.values())
 
                     clean_logs = [
-                        f"Winner: {winner}",
-                        f"Final Score: {my_score} - {opp_score}",
-                        "-------------------",
-                        "STARTING LINEUPS",
+                        f"Winner: {winner}", f"Final Score: {my_score} - {opp_score}",
+                        "-------------------", "STARTING LINEUPS",
                         f"You:      {', '.join(my_starting_lineup)}",
                         f"Opponent: {', '.join(opp_starting_lineup)}",
                         "-------------------"
                     ]
-                    
                     for i, log in enumerate(st.session_state.t_history):
                         clean_txt = log.replace("🟢 **WIN:** ", "WIN: ").replace("🔴 **LOSS:** ", "LOSS: ")
                         clean_logs.append(f"Game {i+1}: {clean_txt}")
-                    
                     st.code("\n".join(clean_logs), language="text")
 
             st.write("---")
