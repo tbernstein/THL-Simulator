@@ -148,10 +148,11 @@ def get_ban_matrix(my_4, opp_4, win_rates, memo, mode):
         ban_matrix.append(row)
     return ban_matrix
 
-def get_sniper_details(deck, opp_decks, win_rates, high_thresh=0.65, low_thresh=0.45):
+def get_sniper_details(deck, opp_decks, win_rates, high_thresh=0.65, avg_floor_thresh=0.49):
     """
     Identifies if a deck is a 'Sniper'.
-    Returns (Best Target, Best WR, Worst Matchup, Worst WR) if it qualifies.
+    A true sniper heavily counters a specific target (>= 65%), 
+    but struggles against the rest of the field on average (< 49%).
     """
     if not opp_decks or len(opp_decks) < 2: 
         return None
@@ -160,7 +161,11 @@ def get_sniper_details(deck, opp_decks, win_rates, high_thresh=0.65, low_thresh=
     max_o = max(wrs, key=wrs.get)
     min_o = min(wrs, key=wrs.get)
     
-    if wrs[max_o] >= high_thresh and wrs[min_o] <= low_thresh:
+    # Calculate average win rate against everything EXCEPT the best target
+    other_wrs = [wr for o, wr in wrs.items() if o != max_o]
+    avg_other_wr = sum(other_wrs) / len(other_wrs) if other_wrs else 0.5
+    
+    if wrs[max_o] >= high_thresh and avg_other_wr < avg_floor_thresh:
         return (max_o, wrs[max_o], min_o, wrs[min_o])
     return None
 
