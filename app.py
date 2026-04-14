@@ -82,7 +82,7 @@ def get_nash_queue_conquest(my_rem, opp_rem, win_rates, memo):
             row.append(wr * v_win + (1 - wr) * v_lose)
         matrix.append(row)
 
-    my_p, opp_p, val = solve_zero_sum(matrix)
+    my_p, opp_p, val = solve_zero_sum(matrix, iterations=2500)
     memo[state] = (val, my_p, opp_p)
     return val, my_p, opp_p
 
@@ -103,7 +103,8 @@ def get_lhs_val(my_rem, opp_rem, my_active, opp_active, win_rates, memo):
                 val, _, _ = get_lhs_val(my_rem, opp_rem, m, o, win_rates, memo)
                 row.append(val)
             matrix.append(row)
-        my_p, opp_p, val = solve_zero_sum(matrix)
+        # Reduced iterations for Hero mode performance protection
+        my_p, opp_p, val = solve_zero_sum(matrix, iterations=1000)
         memo[state] = (val, my_p, opp_p)
         return val, my_p, opp_p
 
@@ -334,12 +335,10 @@ if file_matchups and file_deck_freq and file_class_freq:
                         if match_format == "Legacy (Conquest)":
                             # Legacy: Optimize for highest average performance across the board
                             my_dynamic_decks = [max(class_map[c], key=lambda d: sum(win_rates.get(d, {}).get(od, 0.5) for od in opp_decks)) for c in my_class_combo]
+                            wr = simulate_conquest_bo5(list(my_dynamic_decks), list(opp_decks), win_rates, iterations=100)
                         else:
                             # Hero Mode: Optimize for peak polarization (find the Slayer)
                             my_dynamic_decks = [max(class_map[c], key=lambda d: max([win_rates.get(d, {}).get(od, 0.5) for od in opp_decks])) for c in my_class_combo]
-                        if match_format == "Legacy (Conquest)":
-                            wr = simulate_conquest_bo5(list(my_dynamic_decks), list(opp_decks), win_rates, iterations=100)
-                        else:
                             wr = simulate_lhs_bo5(list(my_dynamic_decks), list(opp_decks), win_rates, iterations=100)
                         matchup_wrs.append(wr)
                         
@@ -358,7 +357,8 @@ if file_matchups and file_deck_freq and file_class_freq:
                                 lowest_avg_wr = avg_wr
                                 target_ban_class = opp_c
                                 cohesion_score = sum(1 for w in wrs_against_target if w < 0.5)
-                    else: # Hero Mode Target Ban (Protect the Anchor)
+                    else: 
+                        # Hero Mode Target Ban (Protect the Anchor)
                         anchor_deck = max(baseline_my_decks, key=lambda d: sum(win_rates.get(d, {}).get(max(class_map[oc], key=lambda x: arch_weights.get(x, 1.0)), 0.5) for oc in all_classes) / len(all_classes))
                         highest_opp_wr = -1
                         target_ban_class = None
@@ -369,6 +369,8 @@ if file_matchups and file_deck_freq and file_class_freq:
                                 highest_opp_wr = opp_wr_against_anchor
                                 target_ban_class = opp_c
                         opp_counter_deck = max(class_map[target_ban_class], key=lambda d: arch_weights.get(d, 1.0))
+                        
+                        # FLIPPED: Now correctly calculates how many decks lose to the target ban, thus are "Protected"
                         cohesion_score = sum(1 for my_d in baseline_my_decks if win_rates.get(my_d, {}).get(opp_counter_deck, 0.5) < 0.5)
 
                     all_results.append({
@@ -400,6 +402,9 @@ if file_matchups and file_deck_freq and file_class_freq:
             cache_key = tuple(sorted(my_classes)) + tuple(sorted(opp_4)) + (match_format,)
             
             if st.session_state.get('phase2_cache_key') != cache_key:
+                if match_format == "Hero (Last Hero Standing)":
+                    st.info("Hero Mode calculations take significantly longer. Please wait...")
+                
                 with st.spinner("Finding optimal archetypes..."):
                     my_options = [class_map[c] for c in my_classes]
                     all_my_combos = list(itertools.product(*my_options))
@@ -460,7 +465,6 @@ if file_matchups and file_deck_freq and file_class_freq:
             st.session_state.t_history = []
             st.session_state.t_start_my = []
             st.session_state.t_start_opp_revealed = {}
-            # New Hero Mode States
             st.session_state.t_my_active = None
             st.session_state.t_opp_active = None
 
@@ -519,6 +523,7 @@ if file_matchups and file_deck_freq and file_class_freq:
                     else: assumed_opp_rem.append(status)
                         
                 memo = {}
+                recommendations = []
                 
                 if match_format == "Legacy (Conquest)":
                     val, my_p, opp_p = get_nash_queue_conquest(st.session_state.t_my_rem, assumed_opp_rem, win_rates, memo)
@@ -545,11 +550,30 @@ if file_matchups and file_deck_freq and file_class_freq:
                         st.write("### 🎯 Counter-Pick Recommendations")
                         counter_recs = []
                         for m in st.session_state.t_my_rem:
-                            wr = win_rates.get(m, {}).get(st.session_state.t_opp_active, 0.5)
-                            counter_recs.append((m, wr))
+                            wr_vs_king = win_rates.get(m, {}).get(st.session_state.t_opp_active, 0.5)
+                            # Sweep Potential: Chance to beat King * chance to beat remaining decks
+                            sweep_prob = wr_vs_king
+                            for opp_rem_deck in assumed_opp_rem:
+                                if opp_rem_deck != st.session_state.t_opp_active:
+                                    sweep_prob *= win_rates.get(m, {}).get(opp_rem_deck, 0.5)
+                                    
+                            counter_recs.append((m, wr_vs_king, sweep_prob))
+                        
                         counter_recs.sort(key=lambda x: x[1], reverse=True)
-                        for m, wr in counter_recs:
-                            st.write(f"- **{m}**: Expected WR {wr*100:.1f}% vs King")
+                        for m, wr, sweep in counter_recs:
+                            st.write(f"- **{m}**: Expected WR **{wr*100:.1f}%** vs King (🧹 Sweep Potential: **{sweep*100:.1f}%**)")
+
+                # Conditionally show the Die Roll UI only when appropriate
+                if match_format == "Legacy (Conquest)" or (match_format == "Hero (Last Hero Standing)" and st.session_state.t_my_active is None and st.session_state.t_opp_active is None):
+                    if st.button("🎲 Roll the Die (Nash Pick)"):
+                        if recommendations:
+                            decks = [r[0] for r in recommendations]
+                            weights = [r[1] for r in recommendations]
+                            chosen = random.choices(decks, weights=weights, k=1)[0]
+                            st.session_state.t_nash_roll = chosen
+                            
+                    if 't_nash_roll' in st.session_state:
+                        st.success(f"🎲 The Die says: Queue **{st.session_state.t_nash_roll}**")
 
                 st.write("---")
                 st.write("### 📝 Record Game Result")
