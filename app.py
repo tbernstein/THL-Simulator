@@ -540,9 +540,15 @@ if file_matchups and file_deck_freq and file_class_freq:
                     
         else:
             if not st.session_state.t_my_rem:
-                st.success("🎉 **MATCH OVER! YOU WON!**")
+                if match_format == "Hero (Last Hero Standing)":
+                    st.error("💀 **MATCH OVER! OPPONENT WON!**")
+                else:
+                    st.success("🎉 **MATCH OVER! YOU WON!**")
             elif not st.session_state.t_opp_status:
-                st.error("💀 **MATCH OVER! OPPONENT WON!**")
+                if match_format == "Hero (Last Hero Standing)":
+                    st.success("🎉 **MATCH OVER! YOU WON!**")
+                else:
+                    st.error("💀 **MATCH OVER! OPPONENT WON!**")
             else:
                 st.write("### 🔍 Opponent Lineup Status")
                 opp_cols = st.columns(len(st.session_state.t_opp_status))
